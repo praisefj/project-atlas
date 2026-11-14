@@ -90,6 +90,7 @@ function App() {
   const routesLayerRef = useRef(null);
   const navPinsLayerRef = useRef(null);
   const draftPolyLayerRef = useRef(null);
+  const userLocationLayerRef = useRef(null);
   const draftMarkerRef = useRef(null);
   const clickModeRef = useRef("report");
   const navStepRef = useRef("origin");
@@ -97,6 +98,8 @@ function App() {
   const [online, setOnline] = useState(false);
   const [mapZoom, setMapZoom] = useState(12);
   const [cursorGps, setCursorGps] = useState({ lat: 4.8156, lng: 7.0498 });
+  const [userLocation, setUserLocation] = useState(null);
+  const [locating, setLocating] = useState(false);
   const [timeWindow, setTimeWindow] = useState("all");
   const [activeTab, setActiveTab] = useState("feed");
   const [clickMode, setClickMode] = useState("report");
@@ -166,6 +169,7 @@ function App() {
     routesLayerRef.current = L.layerGroup().addTo(map);
     navPinsLayerRef.current = L.layerGroup().addTo(map);
     draftPolyLayerRef.current = L.layerGroup().addTo(map);
+    userLocationLayerRef.current = L.layerGroup().addTo(map);
 
     map.on("zoom zoomend", () => {
       setMapZoom(map.getZoom());
@@ -231,6 +235,39 @@ function App() {
       mapRef.current = null;
     };
   }, []);
+
+  // Render live user GPS beacon & accuracy perimeter
+  useEffect(() => {
+    if (!userLocationLayerRef.current) return;
+    userLocationLayerRef.current.clearLayers();
+    if (!userLocation) return;
+
+    const { lat, lng, accuracy } = userLocation;
+
+    L.circle([lat, lng], {
+      radius: Math.min(accuracy, 800),
+      color: "#38bdf8",
+      weight: 1.5,
+      opacity: 0.65,
+      fillColor: "#38bdf8",
+      fillOpacity: 0.14
+    }).addTo(userLocationLayerRef.current);
+
+    L.marker([lat, lng], {
+      icon: L.divIcon({
+        className: "",
+        html: `<div class="user-gps-beacon" title="Your Live Location"></div>`,
+        iconSize: [18, 18],
+        iconAnchor: [9, 9]
+      })
+    })
+      .bindPopup(
+        `<strong>Your Live Position</strong><br/>` +
+          `${lat}&deg;N, ${lng}&deg;E<br/>` +
+          `<small>GPS Accuracy: +/-${accuracy}m</small>`
+      )
+      .addTo(userLocationLayerRef.current);
+  }, [userLocation]);
 
   useEffect(() => {
     if (!draftPolyLayerRef.current) return;
@@ -495,6 +532,70 @@ function App() {
       mapRef.current.fitBounds(allBounds, { padding: [55, 55] });
     }
   }, [activeRoutePlan]);
+
+  function handleLocateMe(targetAction = "fly") {
+    if (!navigator.geolocation) {
+      setOsintToast("Geolocation is not supported by this browser.");
+      return;
+    }
+
+    setLocating(true);
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        const lat = Number(pos.coords.latitude.toFixed(5));
+        const lng = Number(pos.coords.longitude.toFixed(5));
+        const accuracy = Math.round(pos.coords.accuracy || 50);
+
+        setUserLocation({ lat, lng, accuracy });
+        setLocating(false);
+
+        if (targetAction === "navOrigin") {
+          setNavForm((prev) => ({
+            ...prev,
+            originLat: String(lat),
+            originLng: String(lng)
+          }));
+          setOsintToast(`Origin A locked to your GPS (${lat}, ${lng}).`);
+        } else if (targetAction === "reportPin") {
+          setForm((prev) => ({
+            ...prev,
+            lat: String(lat),
+            lng: String(lng)
+          }));
+          setOsintToast(`Report coordinates locked to your GPS (${lat}, ${lng}).`);
+        } else {
+          const nearbyHazard = incidents.find((inc) => {
+            if (!inc.verified) return false;
+            const dLat = (inc.lat - lat) * 111320;
+            const dLng = (inc.lng - lng) * 111320 * Math.cos((lat * Math.PI) / 180);
+            const dist = Math.hypot(dLat, dLng);
+            return dist <= (Number(inc.radiusMeters) || 1000) * 1.25;
+          });
+
+          if (nearbyHazard) {
+            setOsintToast(
+              `GPS Locked (+/-${accuracy}m) - WARNING: Near "${nearbyHazard.title}"!`
+            );
+          } else {
+            setOsintToast(`GPS Locked: ${lat}, ${lng} (+/-${accuracy}m)`);
+          }
+        }
+
+        if (mapRef.current) {
+          mapRef.current.flyTo([lat, lng], 15);
+        }
+      },
+      (err) => {
+        setLocating(false);
+        if (err.code === 1) {
+          setOsintToast("Location permission denied. Click the lock icon in your browser address bar to allow.");
+        } else {
+          setOsintToast("Unable to acquire GPS fix. Ensure Windows Location Services are enabled.");
+        }
+      },
+      { enableHighAccuracy: true, timeout: 10000, maximumAge: 15000 }
+    );
+  }
 
   async function handleOperatorAuth(e) {
     e.preventDefault();
@@ -763,7 +864,6 @@ function App() {
   const totalCount = incidents.length + zones.length;
   const radarPct = Math.max(2, Math.round(getZoomRadarScale(mapZoom) * 100));
 
-  // Threat Analytics Computations
   const allItems = [...incidents, ...zones];
   const highVerified = allItems.filter((x) => x.verified && x.severity === "High").length;
   const threatStatus =
@@ -830,7 +930,7 @@ function App() {
                 <button
                   className="sync-btn op-unlocked"
                   onClick={handleLockOperator}
-                  title="Operator Mode Active — Click to lock"
+                  title="Operator Mode Active - Click to lock"
                 >
                   OP: UNLOCKED
                 </button>
@@ -1144,9 +1244,19 @@ function App() {
             <>
               <p className="card-notes">
                 Click the map to alternate between setting <strong>Origin A</strong>{" "}
-                and <strong>Destination B</strong>, or select a Port Harcourt
-                corridor preset below.
+                and <strong>Destination B</strong>, or snap Origin A to your live GPS.
               </p>
+
+              <button
+                type="button"
+                className="btn-sm route-btn"
+                onClick={() => handleLocateMe("navOrigin")}
+                disabled={locating}
+              >
+                {locating
+                  ? "Acquiring GPS..."
+                  : "Set Origin A to My Current Location"}
+              </button>
 
               <div>
                 <span className="form-label">Quick Port Harcourt Corridors</span>
@@ -1270,7 +1380,7 @@ function App() {
               <p className="card-notes">
                 {reportType === "polygon"
                   ? `Click at least 3 boundary points on the map to trace a floodbasin or cordoned area (${draftPolygon.length} point(s) plotted).`
-                  : "Click anywhere on the map to lock GPS coordinates. New reports auto-verify at 3 field confirmations or via Operator PIN."}
+                  : "Click anywhere on the map or snap to your live GPS coordinates below."}
               </p>
 
               <div>
@@ -1321,6 +1431,17 @@ function App() {
 
               {reportType === "point" ? (
                 <>
+                  <button
+                    type="button"
+                    className="btn-sm route-btn"
+                    onClick={() => handleLocateMe("reportPin")}
+                    disabled={locating}
+                  >
+                    {locating
+                      ? "Acquiring GPS..."
+                      : "Use My Live GPS Coordinates"}
+                  </button>
+
                   <div>
                     <label className="form-label">Impact Zone Radius (meters)</label>
                     <input
@@ -1610,12 +1731,21 @@ function App() {
         </div>
 
         <div className="map-hud-top">
+          <button
+            className="hud-btn locate"
+            onClick={() => handleLocateMe("fly")}
+            disabled={locating}
+            title="Center map on your current GPS location"
+          >
+            {locating ? "Locating..." : "Locate Me"}
+          </button>
           <span
             style={{
               fontFamily: "monospace",
               fontSize: "0.72rem",
               color: "#94a3b8",
-              padding: "0.38rem 0.55rem",
+              padding: "0.38rem 0.5rem",
+              borderLeft: "1px solid #1e293b",
               borderRight: "1px solid #1e293b"
             }}
           >
@@ -1726,6 +1856,13 @@ function App() {
           <div className="legend-item">
             <span className="dot" style={{ background: "#10b981" }} />
             <span>Safe Detour Corridor</span>
+          </div>
+          <div className="legend-item">
+            <span
+              className="dot"
+              style={{ background: "#0ea5e9", border: "1.5px solid #fff" }}
+            />
+            <span>Your Live GPS Beacon</span>
           </div>
         </div>
       </div>
