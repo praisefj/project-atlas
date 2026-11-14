@@ -85,6 +85,8 @@ function App() {
   const [news, setNews] = useState([]);
   const [activeRoutePlan, setActiveRoutePlan] = useState(null);
   const [loadingRouteId, setLoadingRouteId] = useState(null);
+  const [syncingOsint, setSyncingOsint] = useState(false);
+  const [osintToast, setOsintToast] = useState("");
 
   const [navForm, setNavForm] = useState({
     originLat: "4.8781",
@@ -170,7 +172,6 @@ function App() {
     };
   }, []);
 
-  // Draw Origin A and Destination B pins whenever Safe Nav coordinates update
   useEffect(() => {
     if (!navPinsLayerRef.current) return;
     navPinsLayerRef.current.clearLayers();
@@ -194,18 +195,19 @@ function App() {
     }
   }, [navForm, clickMode, activeTab]);
 
-  useEffect(() => {
-    Promise.all([
+  async function loadGridData() {
+    const [health, incList, newsList] = await Promise.all([
       fetch("/api/health").then((r) => r.json()),
       fetch("/api/incidents").then((r) => r.json()),
       fetch("/api/news").then((r) => r.json())
-    ])
-      .then(([health, incList, newsList]) => {
-        setOnline(health.status === "ok");
-        setIncidents(incList);
-        setNews(newsList);
-      })
-      .catch(() => setOnline(false));
+    ]);
+    setOnline(health.status === "ok");
+    setIncidents(incList);
+    setNews(newsList);
+  }
+
+  useEffect(() => {
+    loadGridData().catch(() => setOnline(false));
   }, []);
 
   const filteredIncidents = incidents.filter((item) => {
@@ -321,6 +323,28 @@ function App() {
       mapRef.current.fitBounds(allBounds, { padding: [55, 55] });
     }
   }, [activeRoutePlan]);
+
+  async function handleSyncOsint() {
+    setSyncingOsint(true);
+    try {
+      const res = await fetch("/api/osint/sync", { method: "POST" });
+      if (res.ok) {
+        const summary = await res.json();
+        await loadGridData();
+        setOsintToast(
+          `OSINT Sync: +${summary.newNewsCount} intel wire(s), +${summary.newPinsCount} auto-pinned zone(s)`
+        );
+        if (summary.latestAutoPin && mapRef.current) {
+          mapRef.current.flyTo(
+            [summary.latestAutoPin.lat, summary.latestAutoPin.lng],
+            13
+          );
+        }
+      }
+    } finally {
+      setSyncingOsint(false);
+    }
+  }
 
   async function runSafeNavigation(origin, destination, label = "Custom Corridor") {
     setLoadingRouteId("nav");
@@ -474,10 +498,33 @@ function App() {
         <div className="topbar">
           <div className="topbar-row">
             <h1>Project Atlas</h1>
-            <span className={`live-pill ${online ? "" : "offline"}`}>
-              {online ? "GRID LIVE" : "OFFLINE"}
-            </span>
+            <div className="top-actions">
+              <button
+                className="sync-btn"
+                onClick={handleSyncOsint}
+                disabled={syncingOsint}
+                title="Scan live Nigerian news & weather feeds for Port Harcourt landmarks"
+              >
+                {syncingOsint ? "SCANNING..." : "SYNC OSINT"}
+              </button>
+              <span className={`live-pill ${online ? "" : "offline"}`}>
+                {online ? "LIVE" : "OFFLINE"}
+              </span>
+            </div>
           </div>
+
+          {osintToast && (
+            <div className="osint-toast">
+              <span>{osintToast}</span>
+              <button
+                className="icon-del"
+                onClick={() => setOsintToast("")}
+                title="Dismiss"
+              >
+                &times;
+              </button>
+            </div>
+          )}
 
           <div className="kpi-strip">
             <div className="kpi-box">
@@ -580,11 +627,25 @@ function App() {
                     >
                       {item.verified ? "VERIFIED" : "UNVERIFIED"}
                     </span>
+                    {item.autoGeocoded && (
+                      <span className="tag osint">AUTO-OSINT</span>
+                    )}
                     <span className="tag">{item.category}</span>
-                    <span className="tag">{item.radiusMeters}m radius</span>
+                    <span className="tag">{item.radiusMeters}m</span>
                   </div>
 
                   {item.notes && <p className="card-notes">{item.notes}</p>}
+
+                  {item.sourceUrl && (
+                    <a
+                      className="source-link"
+                      href={item.sourceUrl}
+                      target="_blank"
+                      rel="noreferrer"
+                    >
+                      Inspect Source Dispatch &rarr;
+                    </a>
+                  )}
 
                   <div className="card-actions">
                     <button
@@ -811,6 +872,17 @@ function App() {
 
           {activeTab === "news" && (
             <>
+              <button
+                type="button"
+                className="btn-primary"
+                onClick={handleSyncOsint}
+                disabled={syncingOsint}
+              >
+                {syncingOsint
+                  ? "Fetching Live RSS & Weather Feeds..."
+                  : "Pull Live Port Harcourt News & Weather"}
+              </button>
+
               <form className="form-stack" onSubmit={handlePostNews}>
                 <div className="row-2">
                   <input
@@ -833,15 +905,15 @@ function App() {
                   </select>
                 </div>
                 <input
-                  placeholder="Post breaking regional update..."
+                  placeholder="Post manual regional update..."
                   value={newsForm.headline}
                   onChange={(e) =>
                     setNewsForm({ ...newsForm, headline: e.target.value })
                   }
                   required
                 />
-                <button className="btn-primary" type="submit">
-                  Broadcast to Intel Wire
+                <button className="btn-sm" type="submit">
+                  + Add Manual Intel Wire
                 </button>
               </form>
 
@@ -854,6 +926,16 @@ function App() {
                     <span>{n.timestamp}</span>
                   </div>
                   <p className="news-headline">{n.headline}</p>
+                  {n.url && (
+                    <a
+                      className="source-link"
+                      href={n.url}
+                      target="_blank"
+                      rel="noreferrer"
+                    >
+                      Open Original Story &rarr;
+                    </a>
+                  )}
                 </div>
               ))}
             </>
@@ -902,7 +984,7 @@ function App() {
               className="dot"
               style={{ background: "#fbbf24", border: "1px dashed #fff" }}
             />
-            <span>Pending Verification</span>
+            <span>Pending / Auto-OSINT Pin</span>
           </div>
           <div className="legend-item">
             <span className="dot" style={{ background: "#10b981" }} />
