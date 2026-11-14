@@ -8,6 +8,7 @@ const app = express();
 const PORT = process.env.PORT || 5000;
 const INCIDENTS_FILE = path.join(__dirname, "data", "incidents.json");
 const NEWS_FILE = path.join(__dirname, "data", "news.json");
+const MAX_ARTICLE_AGE_MS = 21 * 24 * 60 * 60 * 1000; // 21-day freshness window
 
 app.use(cors());
 app.use(express.json());
@@ -39,14 +40,19 @@ const PH_LANDMARKS = [
   { keys: ["port harcourt", "rivers state"], name: "Port Harcourt Metro", lat: 4.8156, lng: 7.0498 }
 ];
 
+// Restricted with when:14d / when:7d so only current stories are returned
 const RSS_SOURCES = [
   {
     name: "Google News PH Hazards",
-    url: "https://news.google.com/rss/search?q=%22Port+Harcourt%22+(flood+OR+rain+OR+traffic+OR+fire+OR+road+OR+blockade)&hl=en-NG&gl=NG&ceid=NG:en"
+    url: "https://news.google.com/rss/search?q=%22Port+Harcourt%22+(flood+OR+rain+OR+traffic+OR+fire+OR+road+OR+blockade)+when:14d&hl=en-NG&gl=NG&ceid=NG:en"
   },
   {
     name: "Google News Rivers Alert",
-    url: "https://news.google.com/rss/search?q=%22Rivers+State%22+(flood+OR+weather+OR+accident+OR+outage+OR+emergency)&hl=en-NG&gl=NG&ceid=NG:en"
+    url: "https://news.google.com/rss/search?q=%22Rivers+State%22+(flood+OR+weather+OR+accident+OR+outage+OR+emergency)+when:14d&hl=en-NG&gl=NG&ceid=NG:en"
+  },
+  {
+    name: "Google News PH Local",
+    url: "https://news.google.com/rss/search?q=%22Port+Harcourt%22+when:7d&hl=en-NG&gl=NG&ceid=NG:en"
   },
   {
     name: "Vanguard Nigeria",
@@ -78,23 +84,48 @@ function decodeXml(raw = "") {
     .trim();
 }
 
+function formatRelativeTime(publishedMs) {
+  if (!publishedMs || Number.isNaN(publishedMs)) return "Recent";
+  const diffMins = Math.max(1, Math.floor((Date.now() - publishedMs) / 60000));
+  if (diffMins < 60) return `${diffMins}m ago`;
+  const diffHours = Math.floor(diffMins / 60);
+  if (diffHours < 24) return `${diffHours}h ago`;
+  const diffDays = Math.floor(diffHours / 24);
+  return `${diffDays}d ago`;
+}
+
 function parseRssItems(xml, fallbackSource) {
   const items = [];
   const itemMatches = xml.match(/<item\b[\s\S]*?<\/item>/gi) || [];
+  const now = Date.now();
 
-  for (const block of itemMatches.slice(0, 20)) {
+  for (const block of itemMatches.slice(0, 25)) {
     const titleMatch = block.match(/<title\b[^>]*>([\s\S]*?)<\/title>/i);
     const linkMatch = block.match(/<link\b[^>]*>([\s\S]*?)<\/link>/i);
     const sourceMatch = block.match(/<source\b[^>]*>([\s\S]*?)<\/source>/i);
     const descMatch = block.match(/<description\b[^>]*>([\s\S]*?)<\/description>/i);
+    const pubDateMatch = block.match(/<pubDate\b[^>]*>([\s\S]*?)<\/pubDate>/i);
 
     const title = decodeXml(titleMatch ? titleMatch[1] : "");
     const link = decodeXml(linkMatch ? linkMatch[1] : "");
     const source = decodeXml(sourceMatch ? sourceMatch[1] : fallbackSource);
     const description = decodeXml(descMatch ? descMatch[1] : "");
+    const pubDateRaw = decodeXml(pubDateMatch ? pubDateMatch[1] : "");
+    const publishedMs = pubDateRaw ? Date.parse(pubDateRaw) : NaN;
+
+    // Skip stale articles older than 21 days (blocks 2025 archive results)
+    if (!Number.isNaN(publishedMs) && now - publishedMs > MAX_ARTICLE_AGE_MS) {
+      continue;
+    }
 
     if (title) {
-      items.push({ title, link, source, description });
+      items.push({
+        title,
+        link,
+        source,
+        description,
+        publishedMs: Number.isNaN(publishedMs) ? now : publishedMs
+      });
     }
   }
   return items;
@@ -149,8 +180,21 @@ function classifyHazard(text) {
 }
 
 async function runOsintIngestion() {
-  const existingNews = readJson(NEWS_FILE);
-  const existingIncidents = readJson(INCIDENTS_FILE);
+  const now = Date.now();
+
+  // Automatically purge any previously ingested stale/2025 OSINT items
+  const existingNews = readJson(NEWS_FILE).filter((n) => {
+    if (n.timestamp === "Just ingested") return false;
+    if (n.publishedAt && now - Date.parse(n.publishedAt) > MAX_ARTICLE_AGE_MS) return false;
+    return true;
+  });
+
+  const existingIncidents = readJson(INCIDENTS_FILE).filter((inc) => {
+    if (!inc.autoGeocoded) return true;
+    const refTime = inc.publishedAt ? Date.parse(inc.publishedAt) : Date.parse(inc.createdAt);
+    if (!Number.isNaN(refTime) && now - refTime > MAX_ARTICLE_AGE_MS) return false;
+    return true;
+  });
 
   const seenHeadlines = new Set(existingNews.map((n) => n.headline.toLowerCase()));
   const seenIncidentTitles = new Set(existingIncidents.map((i) => i.title.toLowerCase()));
@@ -162,7 +206,7 @@ async function runOsintIngestion() {
     RSS_SOURCES.map(async (feed) => {
       const res = await fetch(feed.url, {
         headers: { "User-Agent": "ProjectAtlasOSINT/1.0" },
-        signal: AbortSignal.timeout(5000)
+        signal: AbortSignal.timeout(5500)
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const xml = await res.text();
@@ -177,23 +221,8 @@ async function runOsintIngestion() {
     }
   }
 
-  // Offline/restricted network fallback bulletin so testing always works
-  if (!liveFeedSucceeded) {
-    fetchedItems = [
-      {
-        title: "Heavy rain triggers flash flood warning along Aba-PH Expressway and Eliozu axis",
-        source: "NIMET / Rivers Weather Watch",
-        link: "",
-        description: "Motorists advised to use alternative links due to rising water levels."
-      },
-      {
-        title: "Tanker breakdown causes severe gridlock near Eleme / Akpajo Junction",
-        source: "Rivers Transit Monitor",
-        link: "",
-        description: "Emergency recovery crew en route; heavy congestion reported."
-      }
-    ];
-  }
+  // Sort newest articles first
+  fetchedItems.sort((a, b) => b.publishedMs - a.publishedMs);
 
   let newNewsCount = 0;
   let newPinsCount = 0;
@@ -204,7 +233,6 @@ async function runOsintIngestion() {
     const landmark = detectLandmark(combinedText);
     const hazard = classifyHazard(combinedText);
 
-    // Keep items relevant to Port Harcourt / Rivers State
     if (!landmark) continue;
 
     const cleanTitle = item.title.replace(/\s+-\s+[^-]+$/, "").trim();
@@ -213,6 +241,9 @@ async function runOsintIngestion() {
     seenHeadlines.add(cleanTitle.toLowerCase());
     newNewsCount++;
 
+    const publishedIso = new Date(item.publishedMs).toISOString();
+    const relTime = formatRelativeTime(item.publishedMs);
+
     existingNews.unshift({
       id: `news-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
       source: item.source || "OSINT Feed",
@@ -220,15 +251,14 @@ async function runOsintIngestion() {
       headline: cleanTitle,
       landmark: landmark.name,
       url: item.link || "",
-      timestamp: "Just ingested"
+      publishedAt: publishedIso,
+      timestamp: relTime
     });
 
-    // If headline describes an actionable hazard at a specific landmark, auto-pin as UNVERIFIED
     if (hazard && !seenIncidentTitles.has(cleanTitle.toLowerCase())) {
       seenIncidentTitles.add(cleanTitle.toLowerCase());
       newPinsCount++;
 
-      // Slight deterministic jitter (~120m) so multiple reports at the same junction do not stack identically
       const jitterLat = (Math.random() - 0.5) * 0.002;
       const jitterLng = (Math.random() - 0.5) * 0.002;
 
@@ -244,7 +274,8 @@ async function runOsintIngestion() {
         radiusMeters: hazard.radiusMeters,
         lat: Number((landmark.lat + jitterLat).toFixed(5)),
         lng: Number((landmark.lng + jitterLng).toFixed(5)),
-        notes: `Auto-geocoded near ${landmark.name} from ${item.source || "news wire"}. Awaiting operator verification.`,
+        notes: `Published ${relTime} via ${item.source || "news wire"} (${landmark.name}). Awaiting operator verification.`,
+        publishedAt: publishedIso,
         createdAt: new Date().toISOString()
       };
 
@@ -642,7 +673,6 @@ app.post("/api/routes/navigate", async (req, res) => {
 
 app.listen(PORT, () => {
   console.log(`Project Atlas Tactical API running on http://localhost:${PORT}`);
-  // Background OSINT polling every 10 minutes
   setInterval(() => {
     runOsintIngestion().catch(() => {});
   }, 10 * 60 * 1000);
