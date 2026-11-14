@@ -31,30 +31,39 @@ const PH_PRESETS = [
 const SEVERITY_THEME = {
   High: {
     core: "#ff2a55",
-    glow: "0 0 16px #ff2a55, 0 0 36px #ff2a55, 0 0 64px rgba(255, 42, 85, 0.9)",
+    glow: "0 0 14px #ff2a55, 0 0 30px #ff2a55, 0 0 52px rgba(255, 42, 85, 0.85)",
     ring: "#ff2a55"
   },
   Medium: {
     core: "#ff9900",
-    glow: "0 0 14px #ff9900, 0 0 30px rgba(255, 153, 0, 0.85)",
+    glow: "0 0 12px #ff9900, 0 0 26px rgba(255, 153, 0, 0.8)",
     ring: "#ff9900"
   },
   Low: {
     core: "#00e5a8",
-    glow: "0 0 12px #00e5a8, 0 0 26px rgba(0, 229, 168, 0.75)",
+    glow: "0 0 10px #00e5a8, 0 0 22px rgba(0, 229, 168, 0.7)",
     ring: "#00e5a8"
   }
 };
 
-function createHotspotIcon(severity, verified) {
+// Contracts radar radius smoothly as zoom increases above level 12
+function getZoomRadarScale(zoom) {
+  if (zoom <= 12) return 1;
+  return Math.max(0.015, Math.pow(0.46, zoom - 12));
+}
+
+function createHotspotIcon(severity, verified, zoom) {
   const theme = SEVERITY_THEME[severity] || SEVERITY_THEME.Medium;
-  const shadow = verified ? theme.glow : "0 0 10px rgba(251, 191, 36, 0.65)";
+  const shadow = verified ? theme.glow : "0 0 8px rgba(251, 191, 36, 0.65)";
   const bg = verified ? theme.core : "#fbbf24";
+  const size = Math.max(9, Math.min(18, Math.round(18 - Math.max(0, zoom - 12) * 1.6)));
+  const half = Math.round(size / 2);
+
   return L.divIcon({
     className: "",
-    html: `<div class="warzone-core ${verified ? "" : "unverified"}" style="background:${bg};box-shadow:${shadow};"></div>`,
-    iconSize: [18, 18],
-    iconAnchor: [9, 9]
+    html: `<div class="warzone-core ${verified ? "" : "unverified"}" style="width:${size}px;height:${size}px;background:${bg};box-shadow:${shadow};"></div>`,
+    iconSize: [size, size],
+    iconAnchor: [half, half]
   });
 }
 
@@ -78,6 +87,7 @@ function App() {
   const navStepRef = useRef("origin");
 
   const [online, setOnline] = useState(false);
+  const [mapZoom, setMapZoom] = useState(12);
   const [activeTab, setActiveTab] = useState("feed");
   const [clickMode, setClickMode] = useState("report");
   const [verifyFilter, setVerifyFilter] = useState("all");
@@ -130,6 +140,10 @@ function App() {
     zonesLayerRef.current = L.layerGroup().addTo(map);
     routesLayerRef.current = L.layerGroup().addTo(map);
     navPinsLayerRef.current = L.layerGroup().addTo(map);
+
+    map.on("zoom zoomend", () => {
+      setMapZoom(map.getZoom());
+    });
 
     map.on("click", (e) => {
       const lat = e.latlng.lat.toFixed(5);
@@ -216,27 +230,31 @@ function App() {
     return true;
   });
 
+  // Render zoom-adaptive radial hotspots that shrink precisely toward ground zero as you zoom in
   useEffect(() => {
     if (!zonesLayerRef.current) return;
     zonesLayerRef.current.clearLayers();
 
+    const zoomScale = getZoomRadarScale(mapZoom);
+
     filteredIncidents.forEach((item) => {
       const theme = SEVERITY_THEME[item.severity] || SEVERITY_THEME.Medium;
-      const radius = Number(item.radiusMeters) || 1000;
+      const baseRadius = Number(item.radiusMeters) || 1000;
+      const effectiveRadius = baseRadius * zoomScale;
       const center = [item.lat, item.lng];
 
       if (item.verified) {
         const layers = [
-          { scale: 1.65, fillOpacity: 0.05, strokeOpacity: 0.2, dash: "4 6" },
-          { scale: 1.25, fillOpacity: 0.1, strokeOpacity: 0.35, dash: null },
-          { scale: 0.9, fillOpacity: 0.18, strokeOpacity: 0.5, dash: null },
-          { scale: 0.55, fillOpacity: 0.28, strokeOpacity: 0.65, dash: null },
-          { scale: 0.25, fillOpacity: 0.45, strokeOpacity: 0.85, dash: null }
+          { scale: 1.55, fillOpacity: 0.05, strokeOpacity: 0.22, dash: "4 6" },
+          { scale: 1.15, fillOpacity: 0.11, strokeOpacity: 0.36, dash: null },
+          { scale: 0.8, fillOpacity: 0.19, strokeOpacity: 0.52, dash: null },
+          { scale: 0.48, fillOpacity: 0.3, strokeOpacity: 0.68, dash: null },
+          { scale: 0.22, fillOpacity: 0.48, strokeOpacity: 0.88, dash: null }
         ];
 
         layers.forEach((layer) => {
           L.circle(center, {
-            radius: radius * layer.scale,
+            radius: effectiveRadius * layer.scale,
             color: theme.ring,
             weight: 1,
             opacity: layer.strokeOpacity,
@@ -246,27 +264,31 @@ function App() {
           }).addTo(zonesLayerRef.current);
         });
       } else {
+        // Compact micro-radar for unverified reports so they never overwhelm the map
+        const unverifiedRadius = Math.min(baseRadius, 280) * zoomScale;
         L.circle(center, {
-          radius: radius,
+          radius: unverifiedRadius,
           color: "#fbbf24",
-          weight: 1.5,
+          weight: 1.25,
           opacity: 0.65,
           fillColor: "#fbbf24",
-          fillOpacity: 0.08,
-          dashArray: "6 6"
+          fillOpacity: 0.12,
+          dashArray: "4 4"
         }).addTo(zonesLayerRef.current);
       }
 
       const statusText = item.verified ? "VERIFIED INTEL" : "UNVERIFIED REPORT";
-      L.marker(center, { icon: createHotspotIcon(item.severity, item.verified) })
+      L.marker(center, {
+        icon: createHotspotIcon(item.severity, item.verified, mapZoom)
+      })
         .bindPopup(
           `<strong>${item.title}</strong><br/>` +
-            `<span style="color:${item.verified ? "#34d399" : "#fbbf24"};font-size:11px;">${statusText}</span> &bull; ${item.severity} (${radius}m)<br/>` +
+            `<span style="color:${item.verified ? "#34d399" : "#fbbf24"};font-size:11px;">${statusText}</span> &bull; ${item.severity} (${baseRadius}m zone)<br/>` +
             `<small>${item.notes || ""}</small>`
         )
         .addTo(zonesLayerRef.current);
     });
-  }, [filteredIncidents]);
+  }, [filteredIncidents, mapZoom]);
 
   useEffect(() => {
     if (!routesLayerRef.current) return;
@@ -332,12 +354,12 @@ function App() {
         const summary = await res.json();
         await loadGridData();
         setOsintToast(
-          `OSINT Sync: +${summary.newNewsCount} intel wire(s), +${summary.newPinsCount} auto-pinned zone(s)`
+          `OSINT Sync: +${summary.newNewsCount} intel wire(s), +${summary.newPinsCount} landmark pin(s)`
         );
         if (summary.latestAutoPin && mapRef.current) {
           mapRef.current.flyTo(
             [summary.latestAutoPin.lat, summary.latestAutoPin.lng],
-            13
+            14
           );
         }
       }
@@ -391,7 +413,7 @@ function App() {
         draftMarkerRef.current = null;
       }
       setActiveTab("feed");
-      mapRef.current?.flyTo([created.lat, created.lng], 14);
+      mapRef.current?.flyTo([created.lat, created.lng], 15);
     }
   }
 
@@ -453,6 +475,7 @@ function App() {
 
   const verifiedCount = incidents.filter((i) => i.verified).length;
   const pendingCount = incidents.length - verifiedCount;
+  const radarPct = Math.max(2, Math.round(getZoomRadarScale(mapZoom) * 100));
 
   const renderRoutePanel = () => {
     if (!activeRoutePlan) return null;
@@ -607,7 +630,7 @@ function App() {
                     <span
                       className="card-title"
                       onClick={() =>
-                        mapRef.current?.flyTo([item.lat, item.lng], 14)
+                        mapRef.current?.flyTo([item.lat, item.lng], 15)
                       }
                     >
                       {item.title}
@@ -947,6 +970,17 @@ function App() {
         <main ref={mapContainerRef} className="map-container" />
 
         <div className="map-hud-top">
+          <span
+            style={{
+              fontFamily: "monospace",
+              fontSize: "0.72rem",
+              color: "#94a3b8",
+              padding: "0.38rem 0.55rem",
+              borderRight: "1px solid #1e293b"
+            }}
+          >
+            Z{mapZoom} &bull; RADAR {radarPct}%
+          </span>
           <button
             className={`hud-btn ${clickMode === "report" ? "active" : ""}`}
             onClick={() => setClickMode("report")}

@@ -8,39 +8,37 @@ const app = express();
 const PORT = process.env.PORT || 5000;
 const INCIDENTS_FILE = path.join(__dirname, "data", "incidents.json");
 const NEWS_FILE = path.join(__dirname, "data", "news.json");
-const MAX_ARTICLE_AGE_MS = 21 * 24 * 60 * 60 * 1000; // 21-day freshness window
+const MAX_ARTICLE_AGE_MS = 21 * 24 * 60 * 60 * 1000;
 
 app.use(cors());
 app.use(express.json());
 
-// Port Harcourt & Rivers State Landmark Gazetteer for Auto-Geocoding
 const PH_LANDMARKS = [
-  { keys: ["trans-amadi", "trans amadi"], name: "Trans-Amadi Industrial Layout", lat: 4.8195, lng: 7.0365 },
-  { keys: ["rumuokoro"], name: "Rumuokoro Junction", lat: 4.8674, lng: 6.9988 },
-  { keys: ["garrison"], name: "Garrison Junction", lat: 4.8032, lng: 7.0115 },
-  { keys: ["peter odili"], name: "Peter Odili Road", lat: 4.7965, lng: 7.0432 },
-  { keys: ["east-west road", "east west road"], name: "East-West Road", lat: 4.8720, lng: 6.9750 },
-  { keys: ["aba road", "aba expressway"], name: "Aba-PH Expressway", lat: 4.8280, lng: 7.0185 },
-  { keys: ["oyigbo"], name: "Oyigbo Axis", lat: 4.8781, lng: 7.1285 },
-  { keys: ["eleme", "akpajo"], name: "Eleme / Akpajo Junction", lat: 4.7985, lng: 7.1180 },
-  { keys: ["woji"], name: "Woji District", lat: 4.8235, lng: 7.0545 },
-  { keys: ["choba", "uniport"], name: "Choba / Uniport Axis", lat: 4.8965, lng: 6.9125 },
-  { keys: ["mile 1", "mile one", "diobu"], name: "Mile 1 / Diobu", lat: 4.7915, lng: 7.0015 },
-  { keys: ["mile 3", "mile three"], name: "Mile 3 Axis", lat: 4.8045, lng: 6.9910 },
-  { keys: ["new gra", "gra phase"], name: "New GRA", lat: 4.8240, lng: 7.0055 },
-  { keys: ["eliozu"], name: "Eliozu Flyover", lat: 4.8595, lng: 7.0225 },
-  { keys: ["rukpokwu"], name: "Rukpokwu Axis", lat: 4.9045, lng: 7.0010 },
-  { keys: ["rumuola"], name: "Rumuola Junction", lat: 4.8325, lng: 7.0045 },
-  { keys: ["rumuodara"], name: "Rumuodara Junction", lat: 4.8475, lng: 7.0315 },
-  { keys: ["elelenwo"], name: "Elelenwo", lat: 4.8355, lng: 7.0685 },
-  { keys: ["borokiri", "old township"], name: "Borokiri / Town", lat: 4.7565, lng: 7.0345 },
-  { keys: ["ada george", "agip"], name: "Ada George / Agip", lat: 4.8255, lng: 6.9815 },
-  { keys: ["omagwa", "international airport"], name: "Omagwa Airport Corridor", lat: 5.0155, lng: 6.9495 },
-  { keys: ["bonny"], name: "Bonny Island", lat: 4.4516, lng: 7.1707 },
-  { keys: ["port harcourt", "rivers state"], name: "Port Harcourt Metro", lat: 4.8156, lng: 7.0498 }
+  { keys: ["trans-amadi", "trans amadi"], name: "Trans-Amadi Industrial Layout", lat: 4.8195, lng: 7.0365, specific: true },
+  { keys: ["rumuokoro"], name: "Rumuokoro Junction", lat: 4.8674, lng: 6.9988, specific: true },
+  { keys: ["garrison"], name: "Garrison Junction", lat: 4.8032, lng: 7.0115, specific: true },
+  { keys: ["peter odili"], name: "Peter Odili Road", lat: 4.7965, lng: 7.0432, specific: true },
+  { keys: ["east-west road", "east west road"], name: "East-West Road", lat: 4.8720, lng: 6.9750, specific: true },
+  { keys: ["aba road", "aba expressway"], name: "Aba-PH Expressway", lat: 4.8280, lng: 7.0185, specific: true },
+  { keys: ["oyigbo"], name: "Oyigbo Axis", lat: 4.8781, lng: 7.1285, specific: true },
+  { keys: ["eleme", "akpajo"], name: "Eleme / Akpajo Junction", lat: 4.7985, lng: 7.1180, specific: true },
+  { keys: ["woji"], name: "Woji District", lat: 4.8235, lng: 7.0545, specific: true },
+  { keys: ["choba", "uniport"], name: "Choba / Uniport Axis", lat: 4.8965, lng: 6.9125, specific: true },
+  { keys: ["mile 1", "mile one", "diobu"], name: "Mile 1 / Diobu", lat: 4.7915, lng: 7.0015, specific: true },
+  { keys: ["mile 3", "mile three"], name: "Mile 3 Axis", lat: 4.8045, lng: 6.9910, specific: true },
+  { keys: ["new gra", "gra phase"], name: "New GRA", lat: 4.8240, lng: 7.0055, specific: true },
+  { keys: ["eliozu"], name: "Eliozu Flyover", lat: 4.8595, lng: 7.0225, specific: true },
+  { keys: ["rukpokwu"], name: "Rukpokwu Axis", lat: 4.9045, lng: 7.0010, specific: true },
+  { keys: ["rumuola"], name: "Rumuola Junction", lat: 4.8325, lng: 7.0045, specific: true },
+  { keys: ["rumuodara"], name: "Rumuodara Junction", lat: 4.8475, lng: 7.0315, specific: true },
+  { keys: ["elelenwo"], name: "Elelenwo", lat: 4.8355, lng: 7.0685, specific: true },
+  { keys: ["borokiri", "old township"], name: "Borokiri / Town", lat: 4.7565, lng: 7.0345, specific: true },
+  { keys: ["ada george", "agip"], name: "Ada George / Agip", lat: 4.8255, lng: 6.9815, specific: true },
+  { keys: ["omagwa", "international airport"], name: "Omagwa Airport Corridor", lat: 5.0155, lng: 6.9495, specific: true },
+  { keys: ["bonny"], name: "Bonny Island", lat: 4.4516, lng: 7.1707, specific: true },
+  { keys: ["port harcourt", "rivers state"], name: "Port Harcourt Metro", lat: 4.8156, lng: 7.0498, specific: false }
 ];
 
-// Restricted with when:14d / when:7d so only current stories are returned
 const RSS_SOURCES = [
   {
     name: "Google News PH Hazards",
@@ -113,7 +111,6 @@ function parseRssItems(xml, fallbackSource) {
     const pubDateRaw = decodeXml(pubDateMatch ? pubDateMatch[1] : "");
     const publishedMs = pubDateRaw ? Date.parse(pubDateRaw) : NaN;
 
-    // Skip stale articles older than 21 days (blocks 2025 archive results)
     if (!Number.isNaN(publishedMs) && now - publishedMs > MAX_ARTICLE_AGE_MS) {
       continue;
     }
@@ -144,36 +141,36 @@ function detectLandmark(text) {
 function classifyHazard(text) {
   const lower = text.toLowerCase();
 
-  if (/(flood|rain|rainstorm|submerge|waterlog|overflow|weather|nimet|tide)/.test(lower)) {
+  if (/\b(flood|flooding|rain|rainstorm|submerge|waterlog|overflow|weather|nimet|tide)\b/.test(lower)) {
     return {
       category: "Flooding",
       tag: "WEATHER",
-      severity: /(severe|heavy|submerge|wash|emergency|alert)/.test(lower) ? "High" : "Medium",
-      radiusMeters: 1300
+      severity: /\b(severe|heavy|submerge|wash|emergency|alert)\b/.test(lower) ? "High" : "Medium",
+      radiusMeters: 1200
     };
   }
-  if (/(fire|explosion|tanker|inferno|gas|leak|spill|shoot|clash|security)/.test(lower)) {
+  if (/\b(fire|explosion|tanker|inferno|gas leak|oil spill|shoot|clash|security)\b/.test(lower)) {
     return {
       category: "Hazard",
       tag: "ALERT",
       severity: "High",
-      radiusMeters: 1100
+      radiusMeters: 1000
     };
   }
-  if (/(traffic|gridlock|blockade|protest|diversion|crash|accident|closed|shutdown)/.test(lower)) {
+  if (/\b(traffic|gridlock|blockade|diversion|crash|accident|road closed|shutdown)\b/.test(lower)) {
     return {
       category: "Road Blockage",
       tag: "TRANSIT",
-      severity: /(accident|crash|blockade|shutdown)/.test(lower) ? "High" : "Medium",
-      radiusMeters: 950
+      severity: /\b(accident|crash|blockade|shutdown)\b/.test(lower) ? "High" : "Medium",
+      radiusMeters: 900
     };
   }
-  if (/(power|blackout|grid|transformer|bridge|collapse|pipeline|water supply)/.test(lower)) {
+  if (/\b(blackout|grid collapse|transformer|bridge|pipeline|water supply)\b/.test(lower)) {
     return {
       category: "Infrastructure",
       tag: "INTEL",
       severity: "Medium",
-      radiusMeters: 900
+      radiusMeters: 850
     };
   }
   return null;
@@ -182,15 +179,15 @@ function classifyHazard(text) {
 async function runOsintIngestion() {
   const now = Date.now();
 
-  // Automatically purge any previously ingested stale/2025 OSINT items
   const existingNews = readJson(NEWS_FILE).filter((n) => {
-    if (n.timestamp === "Just ingested") return false;
     if (n.publishedAt && now - Date.parse(n.publishedAt) > MAX_ARTICLE_AGE_MS) return false;
     return true;
   });
 
+  // Clean out generic unspecific "Port Harcourt Metro" pile-up pins while keeping verified/specific pins
   const existingIncidents = readJson(INCIDENTS_FILE).filter((inc) => {
-    if (!inc.autoGeocoded) return true;
+    if (!inc.autoGeocoded || inc.verified) return true;
+    if ((inc.notes || "").includes("(Port Harcourt Metro)")) return false;
     const refTime = inc.publishedAt ? Date.parse(inc.publishedAt) : Date.parse(inc.createdAt);
     if (!Number.isNaN(refTime) && now - refTime > MAX_ARTICLE_AGE_MS) return false;
     return true;
@@ -221,7 +218,6 @@ async function runOsintIngestion() {
     }
   }
 
-  // Sort newest articles first
   fetchedItems.sort((a, b) => b.publishedMs - a.publishedMs);
 
   let newNewsCount = 0;
@@ -231,7 +227,7 @@ async function runOsintIngestion() {
   for (const item of fetchedItems) {
     const combinedText = `${item.title} ${item.description}`;
     const landmark = detectLandmark(combinedText);
-    const hazard = classifyHazard(combinedText);
+    const hazard = classifyHazard(item.title);
 
     if (!landmark) continue;
 
@@ -255,12 +251,13 @@ async function runOsintIngestion() {
       timestamp: relTime
     });
 
-    if (hazard && !seenIncidentTitles.has(cleanTitle.toLowerCase())) {
+    // Only auto-pin to the map when a SPECIFIC street, junction, or district is identified
+    if (landmark.specific && hazard && !seenIncidentTitles.has(cleanTitle.toLowerCase())) {
       seenIncidentTitles.add(cleanTitle.toLowerCase());
       newPinsCount++;
 
-      const jitterLat = (Math.random() - 0.5) * 0.002;
-      const jitterLng = (Math.random() - 0.5) * 0.002;
+      const jitterLat = (Math.random() - 0.5) * 0.0015;
+      const jitterLng = (Math.random() - 0.5) * 0.0015;
 
       const autoIncident = {
         id: `inc-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
