@@ -1,0 +1,32 @@
+[
+  {
+    "id": "inc-101",
+    "title": "Flash Flooding near Garrison Junction",
+    "category": "Flooding",
+    "severity": "High",
+    "lat": 4.8032,
+    "lng": 7.0115,
+    "notes": "Heavy water accumulation slowing northbound lanes.",
+    "createdAt": "2026-11-14T08:30:00.000Z"
+  },
+  {
+    "id": "inc-102",
+    "title": "Road Diversion at Rumuokoro Roundabout",
+    "category": "Road Blockage",
+    "severity": "Medium",
+    "lat": 4.8674,
+    "lng": 6.9988,
+    "notes": "Single-lane bottleneck due to drainage maintenance.",
+    "createdAt": "2026-11-14T09:00:00.000Z"
+  },
+  {
+    "id": "inc-103",
+    "title": "Blocked Storm Drain along Peter Odili Road",
+    "category": "Infrastructure",
+    "severity": "Low",
+    "lat": 4.7965,
+    "lng": 7.0432,
+    "notes": "Debris buildup reported; clearing crew requested.",
+    "createdAt": "2026-11-14T09:15:00.000Z"
+  }
+]
