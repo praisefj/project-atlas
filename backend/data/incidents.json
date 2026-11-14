@@ -12,23 +12,11 @@
     "createdAt": "2026-11-14T08:30:00.000Z"
   },
   {
-    "id": "inc-102",
-    "title": "Arterial Bottleneck - Rumuokoro Roundabout",
-    "category": "Road Blockage",
-    "severity": "Medium",
-    "verified": true,
-    "radiusMeters": 1000,
-    "lat": 4.8674,
-    "lng": 6.9988,
-    "notes": "Heavy gridlock and lane closure along East-West Rd approach.",
-    "createdAt": "2026-11-14T09:00:00.000Z"
-  },
-  {
     "id": "inc-103",
     "title": "Unconfirmed Transformer Fire - Trans-Amadi",
     "category": "Hazard",
     "severity": "High",
-    "verified": false,
+    "verified": true,
     "radiusMeters": 900,
     "lat": 4.8195,
     "lng": 7.0365,

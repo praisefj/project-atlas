@@ -5,6 +5,29 @@ import "./App.css";
 
 const PH_CENTER = [4.8156, 7.0498];
 
+const PH_PRESETS = [
+  {
+    name: "Oyigbo -> Town / Garrison",
+    origin: [4.8781, 7.1285],
+    destination: [4.7775, 7.0135]
+  },
+  {
+    name: "Uniport (Choba) -> Port Harcourt",
+    origin: [4.9012, 6.9205],
+    destination: [4.7925, 7.0155]
+  },
+  {
+    name: "Rumuokoro -> Peter Odili Rd",
+    origin: [4.8674, 6.9988],
+    destination: [4.7965, 7.0432]
+  },
+  {
+    name: "Eleme Junction -> Woji Axis",
+    origin: [4.8552, 7.0645],
+    destination: [4.8185, 7.0525]
+  }
+];
+
 const SEVERITY_THEME = {
   High: {
     core: "#ff2a55",
@@ -38,9 +61,9 @@ function createHotspotIcon(severity, verified) {
 function createEndpointIcon(label, color) {
   return L.divIcon({
     className: "",
-    html: `<div style="background:#090e1a;border:2px solid ${color};color:${color};font-family:monospace;font-size:10px;font-weight:700;padding:1px 5px;border-radius:4px;white-space:nowrap;box-shadow:0 0 8px rgba(0,0,0,0.8);">${label}</div>`,
-    iconSize: [46, 18],
-    iconAnchor: [23, 9]
+    html: `<div style="background:#090e1a;border:2px solid ${color};color:${color};font-family:monospace;font-size:10px;font-weight:700;padding:1px 6px;border-radius:4px;white-space:nowrap;box-shadow:0 0 10px rgba(0,0,0,0.85);">${label}</div>`,
+    iconSize: [58, 18],
+    iconAnchor: [29, 9]
   });
 }
 
@@ -49,15 +72,26 @@ function App() {
   const mapRef = useRef(null);
   const zonesLayerRef = useRef(null);
   const routesLayerRef = useRef(null);
+  const navPinsLayerRef = useRef(null);
   const draftMarkerRef = useRef(null);
+  const clickModeRef = useRef("report");
+  const navStepRef = useRef("origin");
 
   const [online, setOnline] = useState(false);
   const [activeTab, setActiveTab] = useState("feed");
+  const [clickMode, setClickMode] = useState("report");
   const [verifyFilter, setVerifyFilter] = useState("all");
   const [incidents, setIncidents] = useState([]);
   const [news, setNews] = useState([]);
   const [activeRoutePlan, setActiveRoutePlan] = useState(null);
   const [loadingRouteId, setLoadingRouteId] = useState(null);
+
+  const [navForm, setNavForm] = useState({
+    originLat: "4.8781",
+    originLng: "7.1285",
+    destLat: "4.7775",
+    destLng: "7.0135"
+  });
 
   const [form, setForm] = useState({
     title: "",
@@ -76,6 +110,10 @@ function App() {
   });
 
   useEffect(() => {
+    clickModeRef.current = clickMode;
+  }, [clickMode]);
+
+  useEffect(() => {
     if (mapRef.current || !mapContainerRef.current) return;
 
     const map = L.map(mapContainerRef.current, {
@@ -89,12 +127,25 @@ function App() {
 
     zonesLayerRef.current = L.layerGroup().addTo(map);
     routesLayerRef.current = L.layerGroup().addTo(map);
+    navPinsLayerRef.current = L.layerGroup().addTo(map);
 
     map.on("click", (e) => {
       const lat = e.latlng.lat.toFixed(5);
       const lng = e.latlng.lng.toFixed(5);
-      setForm((prev) => ({ ...prev, lat, lng }));
 
+      if (clickModeRef.current === "nav") {
+        setActiveTab("nav");
+        if (navStepRef.current === "origin") {
+          setNavForm((prev) => ({ ...prev, originLat: lat, originLng: lng }));
+          navStepRef.current = "dest";
+        } else {
+          setNavForm((prev) => ({ ...prev, destLat: lat, destLng: lng }));
+          navStepRef.current = "origin";
+        }
+        return;
+      }
+
+      setForm((prev) => ({ ...prev, lat, lng }));
       if (draftMarkerRef.current) {
         draftMarkerRef.current.setLatLng(e.latlng);
       } else {
@@ -118,6 +169,30 @@ function App() {
       mapRef.current = null;
     };
   }, []);
+
+  // Draw Origin A and Destination B pins whenever Safe Nav coordinates update
+  useEffect(() => {
+    if (!navPinsLayerRef.current) return;
+    navPinsLayerRef.current.clearLayers();
+
+    if (clickMode !== "nav" && activeTab !== "nav") return;
+
+    const oLat = Number(navForm.originLat);
+    const oLng = Number(navForm.originLng);
+    const dLat = Number(navForm.destLat);
+    const dLng = Number(navForm.destLng);
+
+    if (!Number.isNaN(oLat) && !Number.isNaN(oLng)) {
+      L.marker([oLat, oLng], {
+        icon: createEndpointIcon("ORIGIN A", "#10b981")
+      }).addTo(navPinsLayerRef.current);
+    }
+    if (!Number.isNaN(dLat) && !Number.isNaN(dLng)) {
+      L.marker([dLat, dLng], {
+        icon: createEndpointIcon("DEST B", "#38bdf8")
+      }).addTo(navPinsLayerRef.current);
+    }
+  }, [navForm, clickMode, activeTab]);
 
   useEffect(() => {
     Promise.all([
@@ -199,11 +274,26 @@ function App() {
 
     const allBounds = [];
 
+    if (activeRoutePlan.blockedRoute?.coordinates?.length) {
+      L.polyline(activeRoutePlan.blockedRoute.coordinates, {
+        color: "#ff2a55",
+        weight: 3.5,
+        opacity: 0.7,
+        dashArray: "6 8"
+      })
+        .bindPopup(
+          `<strong>Blocked Direct Route</strong><br/>Intersects verified hazard zone(s)`
+        )
+        .addTo(routesLayerRef.current);
+      allBounds.push(...activeRoutePlan.blockedRoute.coordinates);
+    }
+
     activeRoutePlan.routes.forEach((route) => {
       const poly = L.polyline(route.coordinates, {
         color: route.color,
-        weight: 4.5,
-        opacity: 0.92
+        weight: route.id === "route-alpha" ? 5 : 3.5,
+        opacity: route.id === "route-alpha" ? 0.95 : 0.75,
+        dashArray: route.id === "route-alpha" ? null : "8 8"
       })
         .bindPopup(
           `<strong>${route.name}</strong><br/>` +
@@ -216,10 +306,10 @@ function App() {
       if (route.id === "route-alpha" && route.coordinates.length >= 2) {
         const startPt = route.coordinates[0];
         const endPt = route.coordinates[route.coordinates.length - 1];
-        L.marker(startPt, { icon: createEndpointIcon("DIVERT", "#10b981") }).addTo(
+        L.marker(startPt, { icon: createEndpointIcon("START A", "#10b981") }).addTo(
           routesLayerRef.current
         );
-        L.marker(endPt, { icon: createEndpointIcon("REJOIN", "#38bdf8") }).addTo(
+        L.marker(endPt, { icon: createEndpointIcon("DEST B", "#38bdf8") }).addTo(
           routesLayerRef.current
         );
       }
@@ -228,9 +318,35 @@ function App() {
     });
 
     if (allBounds.length && mapRef.current) {
-      mapRef.current.fitBounds(allBounds, { padding: [50, 50] });
+      mapRef.current.fitBounds(allBounds, { padding: [55, 55] });
     }
   }, [activeRoutePlan]);
+
+  async function runSafeNavigation(origin, destination, label = "Custom Corridor") {
+    setLoadingRouteId("nav");
+    try {
+      const response = await fetch("/api/routes/navigate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ origin, destination, label })
+      });
+      if (response.ok) {
+        const plan = await response.json();
+        setActiveRoutePlan(plan);
+      }
+    } finally {
+      setLoadingRouteId(null);
+    }
+  }
+
+  async function handleNavSubmit(e) {
+    e.preventDefault();
+    await runSafeNavigation(
+      [Number(navForm.originLat), Number(navForm.originLng)],
+      [Number(navForm.destLat), Number(navForm.destLng)],
+      "Custom A -> B Corridor"
+    );
+  }
 
   async function handleCreateIncident(e) {
     e.preventDefault();
@@ -314,6 +430,44 @@ function App() {
   const verifiedCount = incidents.filter((i) => i.verified).length;
   const pendingCount = incidents.length - verifiedCount;
 
+  const renderRoutePanel = () => {
+    if (!activeRoutePlan) return null;
+    return (
+      <div className="route-panel">
+        <div className="route-panel-head">
+          <span>
+            {activeRoutePlan.snappedToRoads ? "ROAD-SNAPPED" : "GRID"}:{" "}
+            {activeRoutePlan.target}
+          </span>
+          <button
+            className="icon-del"
+            onClick={() => setActiveRoutePlan(null)}
+            title="Clear routes"
+          >
+            &times;
+          </button>
+        </div>
+
+        {activeRoutePlan.avoidedZones?.length > 0 && (
+          <div className="avoided-banner">
+            Avoided {activeRoutePlan.avoidedZones.length} active zone(s):{" "}
+            {activeRoutePlan.avoidedZones.join(", ")}
+          </div>
+        )}
+
+        {activeRoutePlan.routes.map((r) => (
+          <div key={r.id} className="route-option">
+            <strong style={{ color: r.color }}>{r.name}</strong>
+            <div style={{ color: "#94a3b8", marginTop: "2px" }}>
+              {r.status} &bull; {r.distanceKm} km &bull; ~{r.durationMins} mins
+            </div>
+            <div style={{ color: "#cbd5e1", marginTop: "3px" }}>{r.summary}</div>
+          </div>
+        ))}
+      </div>
+    );
+  };
+
   return (
     <div className="atlas-layout">
       <aside className="sidebar">
@@ -346,13 +500,25 @@ function App() {
             className={`nav-tab ${activeTab === "feed" ? "active" : ""}`}
             onClick={() => setActiveTab("feed")}
           >
-            Zones &amp; Routes
+            Zones
+          </button>
+          <button
+            className={`nav-tab ${activeTab === "nav" ? "active" : ""}`}
+            onClick={() => {
+              setActiveTab("nav");
+              setClickMode("nav");
+            }}
+          >
+            Safe Nav
           </button>
           <button
             className={`nav-tab ${activeTab === "report" ? "active" : ""}`}
-            onClick={() => setActiveTab("report")}
+            onClick={() => {
+              setActiveTab("report");
+              setClickMode("report");
+            }}
           >
-            + Log Report
+            + Report
           </button>
           <button
             className={`nav-tab ${activeTab === "news" ? "active" : ""}`}
@@ -386,34 +552,7 @@ function App() {
                 </button>
               </div>
 
-              {activeRoutePlan && (
-                <div className="route-panel">
-                  <div className="route-panel-head">
-                    <span>
-                      BYPASS ({activeRoutePlan.snappedToRoads ? "ROAD-SNAPPED" : "GRID"}):{" "}
-                      {activeRoutePlan.target}
-                    </span>
-                    <button
-                      className="icon-del"
-                      onClick={() => setActiveRoutePlan(null)}
-                      title="Clear routes"
-                    >
-                      &times;
-                    </button>
-                  </div>
-                  {activeRoutePlan.routes.map((r) => (
-                    <div key={r.id} className="route-option">
-                      <strong style={{ color: r.color }}>{r.name}</strong>
-                      <div style={{ color: "#94a3b8", marginTop: "2px" }}>
-                        {r.status} &bull; {r.distanceKm} km &bull; ~{r.durationMins} mins
-                      </div>
-                      <div style={{ color: "#cbd5e1", marginTop: "3px" }}>
-                        {r.summary}
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              )}
+              {renderRoutePanel()}
 
               {filteredIncidents.map((item) => (
                 <div key={item.id} className={`incident-card ${item.severity}`}>
@@ -464,6 +603,108 @@ function App() {
                   </div>
                 </div>
               ))}
+            </>
+          )}
+
+          {activeTab === "nav" && (
+            <>
+              <p className="card-notes">
+                Click the map to alternate between setting <strong>Origin A</strong>{" "}
+                and <strong>Destination B</strong>, or select a Port Harcourt
+                corridor preset below.
+              </p>
+
+              <div>
+                <span className="form-label">Quick Port Harcourt Corridors</span>
+                <div className="preset-grid">
+                  {PH_PRESETS.map((p) => (
+                    <button
+                      key={p.name}
+                      type="button"
+                      className="preset-btn"
+                      onClick={() => {
+                        setNavForm({
+                          originLat: String(p.origin[0]),
+                          originLng: String(p.origin[1]),
+                          destLat: String(p.destination[0]),
+                          destLng: String(p.destination[1])
+                        });
+                        runSafeNavigation(p.origin, p.destination, p.name);
+                      }}
+                    >
+                      {p.name}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <form className="form-stack" onSubmit={handleNavSubmit}>
+                <div className="row-2">
+                  <div>
+                    <label className="form-label">Origin A Lat</label>
+                    <input
+                      type="number"
+                      step="any"
+                      value={navForm.originLat}
+                      onChange={(e) =>
+                        setNavForm({ ...navForm, originLat: e.target.value })
+                      }
+                      required
+                    />
+                  </div>
+                  <div>
+                    <label className="form-label">Origin A Lng</label>
+                    <input
+                      type="number"
+                      step="any"
+                      value={navForm.originLng}
+                      onChange={(e) =>
+                        setNavForm({ ...navForm, originLng: e.target.value })
+                      }
+                      required
+                    />
+                  </div>
+                </div>
+
+                <div className="row-2">
+                  <div>
+                    <label className="form-label">Destination B Lat</label>
+                    <input
+                      type="number"
+                      step="any"
+                      value={navForm.destLat}
+                      onChange={(e) =>
+                        setNavForm({ ...navForm, destLat: e.target.value })
+                      }
+                      required
+                    />
+                  </div>
+                  <div>
+                    <label className="form-label">Destination B Lng</label>
+                    <input
+                      type="number"
+                      step="any"
+                      value={navForm.destLng}
+                      onChange={(e) =>
+                        setNavForm({ ...navForm, destLng: e.target.value })
+                      }
+                      required
+                    />
+                  </div>
+                </div>
+
+                <button
+                  className="btn-primary"
+                  type="submit"
+                  disabled={loadingRouteId === "nav"}
+                >
+                  {loadingRouteId === "nav"
+                    ? "Scanning Verified Zones..."
+                    : "Compute Hazard-Free Route"}
+                </button>
+              </form>
+
+              {renderRoutePanel()}
             </>
           )}
 
@@ -622,13 +863,32 @@ function App() {
 
       <div className="map-wrapper">
         <main ref={mapContainerRef} className="map-container" />
+
+        <div className="map-hud-top">
+          <button
+            className={`hud-btn ${clickMode === "report" ? "active" : ""}`}
+            onClick={() => setClickMode("report")}
+          >
+            Click Mode: Pin Incident
+          </button>
+          <button
+            className={`hud-btn ${clickMode === "nav" ? "active" : ""}`}
+            onClick={() => {
+              setClickMode("nav");
+              setActiveTab("nav");
+            }}
+          >
+            Click Mode: Set A &rarr; B
+          </button>
+        </div>
+
         <div className="map-legend">
           <div className="legend-item">
             <span
               className="dot"
               style={{ background: "#ff2a55", boxShadow: "0 0 8px #ff2a55" }}
             />
-            <span>High Intensity (Verified)</span>
+            <span>High Intensity / Blocked Direct</span>
           </div>
           <div className="legend-item">
             <span
@@ -646,7 +906,7 @@ function App() {
           </div>
           <div className="legend-item">
             <span className="dot" style={{ background: "#10b981" }} />
-            <span>Suggested Bypass Route</span>
+            <span>Safe Detour Corridor</span>
           </div>
         </div>
       </div>
