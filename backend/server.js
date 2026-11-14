@@ -10,6 +10,7 @@ const INCIDENTS_FILE = path.join(__dirname, "data", "incidents.json");
 const ZONES_FILE = path.join(__dirname, "data", "zones.json");
 const NEWS_FILE = path.join(__dirname, "data", "news.json");
 const MAX_ARTICLE_AGE_MS = 21 * 24 * 60 * 60 * 1000;
+const VERIFY_THRESHOLD = 3;
 
 app.use(cors());
 app.use(express.json());
@@ -264,13 +265,14 @@ async function runOsintIngestion() {
         category: hazard.category,
         severity: hazard.severity,
         verified: false,
+        confirmations: 1,
         autoGeocoded: true,
         sourceName: item.source || "OSINT Feed",
         sourceUrl: item.link || "",
         radiusMeters: hazard.radiusMeters,
         lat: Number((landmark.lat + jitterLat).toFixed(5)),
         lng: Number((landmark.lng + jitterLng).toFixed(5)),
-        notes: `Published ${relTime} via ${item.source || "news wire"} (${landmark.name}). Awaiting operator verification.`,
+        notes: `Published ${relTime} via ${item.source || "news wire"} (${landmark.name}). Awaiting operator or 3x field verification.`,
         publishedAt: publishedIso,
         createdAt: new Date().toISOString()
       };
@@ -403,7 +405,11 @@ app.get("/api/health", (req, res) => {
 });
 
 app.get("/api/incidents", (req, res) => {
-  res.json(readJson(INCIDENTS_FILE));
+  const list = readJson(INCIDENTS_FILE).map((item) => ({
+    ...item,
+    confirmations: Number(item.confirmations) || (item.verified ? VERIFY_THRESHOLD : 1)
+  }));
+  res.json(list);
 });
 
 app.post("/api/incidents", (req, res) => {
@@ -419,6 +425,7 @@ app.post("/api/incidents", (req, res) => {
     category: category || "Flooding",
     severity: severity || "Medium",
     verified: false,
+    confirmations: 1,
     autoGeocoded: false,
     radiusMeters: Number(radiusMeters) || 1000,
     lat: Number(lat),
@@ -440,6 +447,29 @@ app.patch("/api/incidents/:id/verify", (req, res) => {
   }
 
   target.verified = !target.verified;
+  if (target.verified && (Number(target.confirmations) || 1) < VERIFY_THRESHOLD) {
+    target.confirmations = VERIFY_THRESHOLD;
+  } else if (!target.verified) {
+    target.confirmations = 1;
+  }
+
+  writeJson(INCIDENTS_FILE, incidents);
+  res.json(target);
+});
+
+app.post("/api/incidents/:id/corroborate", (req, res) => {
+  const incidents = readJson(INCIDENTS_FILE);
+  const target = incidents.find((item) => item.id === req.params.id);
+  if (!target) {
+    return res.status(404).json({ error: "Incident not found." });
+  }
+
+  const current = Number(target.confirmations) || (target.verified ? VERIFY_THRESHOLD : 1);
+  target.confirmations = current + 1;
+  if (target.confirmations >= VERIFY_THRESHOLD) {
+    target.verified = true;
+  }
+
   writeJson(INCIDENTS_FILE, incidents);
   res.json(target);
 });
@@ -454,7 +484,6 @@ app.delete("/api/incidents/:id", (req, res) => {
   res.json({ deleted: req.params.id });
 });
 
-// Polygon Geofence Endpoints
 app.get("/api/zones", (req, res) => {
   res.json(readJson(ZONES_FILE));
 });
@@ -533,6 +562,58 @@ app.post("/api/osint/sync", async (req, res) => {
   } catch (err) {
     res.status(500).json({ error: "OSINT sync failed", details: err.message });
   }
+});
+
+app.get("/api/sitrep", (req, res) => {
+  const incidents = readJson(INCIDENTS_FILE);
+  const zones = readJson(ZONES_FILE);
+  const news = readJson(NEWS_FILE);
+
+  const verifiedInc = incidents.filter((i) => i.verified);
+  const pendingInc = incidents.filter((i) => !i.verified);
+  const verifiedZones = zones.filter((z) => z.verified);
+
+  const lines = [
+    `# PROJECT ATLAS - PORT HARCOURT TACTICAL SITREP`,
+    `Generated: ${new Date().toUTCString()}`,
+    ``,
+    `## GRID TELEMETRY SUMMARY`,
+    `- Verified Hotspot Radars: ${verifiedInc.length}`,
+    `- Verified Polygon Geofences: ${verifiedZones.length}`,
+    `- Unverified / Pending Reports: ${pendingInc.length}`,
+    `- Active Intel Wire Dispatches: ${news.length}`,
+    ``,
+    `## ACTIVE VERIFIED GEOFENCES`,
+    ...(verifiedZones.length
+      ? verifiedZones.map(
+          (z) => `- [${z.severity.toUpperCase()}] ${z.name} (${z.category}) - ${z.notes || "No notes"}`
+        )
+      : [`- None active`]),
+    ``,
+    `## ACTIVE VERIFIED HOTSPOT RADARS`,
+    ...(verifiedInc.length
+      ? verifiedInc.map(
+          (i) =>
+            `- [${i.severity.toUpperCase()}] ${i.title} (${i.category}, ${i.radiusMeters}m @ ${i.lat}, ${i.lng}) - ${i.notes || "No notes"}`
+        )
+      : [`- None active`]),
+    ``,
+    `## PENDING UNVERIFIED REPORTS`,
+    ...(pendingInc.length
+      ? pendingInc.map(
+          (i) =>
+            `- ${i.title} (${i.confirmations || 1}/${VERIFY_THRESHOLD} confirmations @ ${i.lat}, ${i.lng})`
+        )
+      : [`- None pending`]),
+    ``,
+    `## LATEST INTEL WIRE HIGHLIGHTS`,
+    ...news.slice(0, 6).map((n) => `- [${n.tag}] ${n.source}: ${n.headline}`)
+  ];
+
+  res.json({
+    filename: `Project-Atlas-SitRep-${new Date().toISOString().slice(0, 10)}.md`,
+    markdown: lines.join("\n")
+  });
 });
 
 app.post("/api/routes/suggest", async (req, res) => {

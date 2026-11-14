@@ -5,6 +5,14 @@ import "./App.css";
 
 const PH_CENTER = [4.8156, 7.0498];
 
+const TIME_WINDOWS = [
+  { id: "all", label: "ALL", maxAgeMs: Infinity },
+  { id: "7d", label: "7D", maxAgeMs: 7 * 24 * 60 * 60 * 1000 },
+  { id: "24h", label: "24H", maxAgeMs: 24 * 60 * 60 * 1000 },
+  { id: "12h", label: "12H", maxAgeMs: 12 * 60 * 60 * 1000 },
+  { id: "6h", label: "6H", maxAgeMs: 6 * 60 * 60 * 1000 }
+];
+
 const PH_PRESETS = [
   {
     name: "Oyigbo -> Town / Garrison",
@@ -88,6 +96,7 @@ function App() {
 
   const [online, setOnline] = useState(false);
   const [mapZoom, setMapZoom] = useState(12);
+  const [timeWindow, setTimeWindow] = useState("all");
   const [activeTab, setActiveTab] = useState("feed");
   const [clickMode, setClickMode] = useState("report");
   const [reportType, setReportType] = useState("point");
@@ -203,7 +212,6 @@ function App() {
     };
   }, []);
 
-  // Render interactive draft polygon vertices & preview boundary while drawing
   useEffect(() => {
     if (!draftPolyLayerRef.current) return;
     draftPolyLayerRef.current.clearLayers();
@@ -280,19 +288,32 @@ function App() {
     loadGridData().catch(() => setOnline(false));
   }, []);
 
+  const activeTimeSpec =
+    TIME_WINDOWS.find((tw) => tw.id === timeWindow) || TIME_WINDOWS[0];
+
+  const isWithinWindow = (record) => {
+    if (activeTimeSpec.maxAgeMs === Infinity) return true;
+    const rawTs = record.publishedAt || record.createdAt;
+    if (!rawTs) return true;
+    const parsed = Date.parse(rawTs);
+    if (Number.isNaN(parsed)) return true;
+    return Date.now() - parsed <= activeTimeSpec.maxAgeMs;
+  };
+
   const filteredIncidents = incidents.filter((item) => {
+    if (!isWithinWindow(item)) return false;
     if (verifyFilter === "verified") return item.verified;
     if (verifyFilter === "unverified") return !item.verified;
     return true;
   });
 
   const filteredZones = zones.filter((z) => {
+    if (!isWithinWindow(z)) return false;
     if (verifyFilter === "verified") return z.verified;
     if (verifyFilter === "unverified") return !z.verified;
     return true;
   });
 
-  // Render both zoom-adaptive radial hotspots and polygon geofences
   useEffect(() => {
     if (!zonesLayerRef.current) return;
     zonesLayerRef.current.clearLayers();
@@ -373,7 +394,9 @@ function App() {
         }).addTo(zonesLayerRef.current);
       }
 
-      const statusText = item.verified ? "VERIFIED INTEL" : "UNVERIFIED REPORT";
+      const statusText = item.verified
+        ? "VERIFIED INTEL"
+        : `UNVERIFIED (${item.confirmations || 1}/3 CONFIRMS)`;
       L.marker(center, {
         icon: createHotspotIcon(item.severity, item.verified, mapZoom)
       })
@@ -464,6 +487,20 @@ function App() {
     }
   }
 
+  async function handleExportSitrep() {
+    const res = await fetch("/api/sitrep");
+    if (!res.ok) return;
+    const data = await res.json();
+    const blob = new Blob([data.markdown], { type: "text/markdown;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = data.filename;
+    link.click();
+    URL.revokeObjectURL(url);
+    setOsintToast(`Exported briefing: ${data.filename}`);
+  }
+
   async function runSafeNavigation(origin, destination, label = "Custom Corridor") {
     setLoadingRouteId("nav");
     try {
@@ -534,6 +571,21 @@ function App() {
       }
       setActiveTab("feed");
       mapRef.current?.flyTo([created.lat, created.lng], 15);
+    }
+  }
+
+  async function handleCorroborate(id) {
+    const response = await fetch(`/api/incidents/${id}/corroborate`, {
+      method: "POST"
+    });
+    if (response.ok) {
+      const updated = await response.json();
+      setIncidents((prev) =>
+        prev.map((item) => (item.id === id ? updated : item))
+      );
+      if (updated.verified) {
+        setOsintToast(`Threshold reached (3/3): "${updated.title}" auto-verified!`);
+      }
     }
   }
 
@@ -665,15 +717,22 @@ function App() {
             <h1>Project Atlas</h1>
             <div className="top-actions">
               <button
+                className="sync-btn sitrep"
+                onClick={handleExportSitrep}
+                title="Download Markdown Situation Report"
+              >
+                SITREP
+              </button>
+              <button
                 className="sync-btn"
                 onClick={handleSyncOsint}
                 disabled={syncingOsint}
                 title="Scan live Nigerian news & weather feeds for Port Harcourt landmarks"
               >
-                {syncingOsint ? "SCANNING..." : "SYNC OSINT"}
+                {syncingOsint ? "SCAN..." : "OSINT"}
               </button>
               <span className={`live-pill ${online ? "" : "offline"}`}>
-                {online ? "LIVE" : "OFFLINE"}
+                {online ? "LIVE" : "OFF"}
               </span>
             </div>
           </div>
@@ -849,7 +908,9 @@ function App() {
                     <span
                       className={`tag ${item.verified ? "verified" : "unverified"}`}
                     >
-                      {item.verified ? "VERIFIED" : "UNVERIFIED"}
+                      {item.verified
+                        ? `VERIFIED (${item.confirmations || 3}/3)`
+                        : `UNVERIFIED (${item.confirmations || 1}/3)`}
                     </span>
                     {item.autoGeocoded && (
                       <span className="tag osint">AUTO-OSINT</span>
@@ -872,18 +933,27 @@ function App() {
                   )}
 
                   <div className="card-actions">
+                    {!item.verified && (
+                      <button
+                        className="btn-sm confirm-btn"
+                        onClick={() => handleCorroborate(item.id)}
+                        title="Add field confirmation (auto-verifies at 3/3)"
+                      >
+                        Confirm (+1)
+                      </button>
+                    )}
                     <button
                       className="btn-sm verify-btn"
                       onClick={() => handleToggleVerify(item.id)}
                     >
-                      {item.verified ? "Revoke Verify" : "Verify Report"}
+                      {item.verified ? "Revoke" : "Verify"}
                     </button>
                     <button
                       className="btn-sm route-btn"
                       onClick={() => handleSuggestRoutes(item)}
                       disabled={loadingRouteId === item.id}
                     >
-                      {loadingRouteId === item.id ? "Routing..." : "Suggest Bypass"}
+                      {loadingRouteId === item.id ? "Routing..." : "Bypass"}
                     </button>
                   </div>
                 </div>
@@ -1021,7 +1091,7 @@ function App() {
               <p className="card-notes">
                 {reportType === "polygon"
                   ? `Click at least 3 boundary points on the map to trace a floodbasin or cordoned area (${draftPolygon.length} point(s) plotted).`
-                  : "Click anywhere on the map to lock GPS coordinates. New reports enter as UNVERIFIED until confirmed."}
+                  : "Click anywhere on the map to lock GPS coordinates. New reports auto-verify at 3 field confirmations."}
               </p>
 
               <div>
@@ -1274,7 +1344,7 @@ function App() {
         {(clickMode === "draw" || draftPolygon.length > 0) && (
           <div className="draw-toolbar">
             <span style={{ color: "#d8b4fe", fontWeight: 700 }}>
-              GEOFENCE DRAW: {draftPolygon.length} vertex(es)
+              GEOFENCE: {draftPolygon.length} pt(s)
             </span>
             <button
               className="btn-sm"
@@ -1298,10 +1368,25 @@ function App() {
               }}
               disabled={draftPolygon.length < 3}
             >
-              Name &amp; Save
+              Save
             </button>
           </div>
         )}
+
+        <div className="timeline-hud">
+          <span style={{ color: "#64748b", marginRight: "0.25rem" }}>
+            WINDOW:
+          </span>
+          {TIME_WINDOWS.map((tw) => (
+            <button
+              key={tw.id}
+              className={`time-pill ${timeWindow === tw.id ? "active" : ""}`}
+              onClick={() => setTimeWindow(tw.id)}
+            >
+              {tw.label}
+            </button>
+          ))}
+        </div>
 
         <div className="map-legend">
           <div className="legend-item">

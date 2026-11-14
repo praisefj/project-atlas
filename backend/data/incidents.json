@@ -4,7 +4,7 @@
     "title": "NEMA Launches 2025 Flood Preparedness Campaign in Rivers State The National Emergency Management Agency (NEMA) officially launched the 2025 National Preparedness and Response Campaign (NPRC) on June 11, 2025, at the Nigerian Red Cross",
     "category": "Flooding",
     "severity": "High",
-    "verified": false,
+    "verified": true,
     "autoGeocoded": true,
     "sourceName": "Facebook",
     "sourceUrl": "https://news.google.com/rss/articles/CBMi2AFBVV95cUxPMTJmZmdDYnoxRmVCSjRpWWxiMmNsNmkydG1aMTc5a09zVXlVOFJvVW14a19yMXp1TTZ3aVg0TVQxYnpFRnJad0VWSVZXSHhOQVFqZGN0QXYwZlVzUzdfMGJYLXFQWG9DN3J5UXl0VHp3RnYwTUVib21wRk1tYUxpYWIwczVCS2FiV3pmQmtwNlFtRjhyWG81YWp5VWlrZmVacWhkaTdGQXZHaWVvRHhyLVZ4eFhmeHZlX09BVjNZNTlxdmhCcnhmQXNzZEx0QWdxbG83MzJwaWw?oc=5",
@@ -12,7 +12,8 @@
     "lat": 4.81539,
     "lng": 7.04981,
     "notes": "Auto-geocoded near Port Harcourt Metro from Facebook. Awaiting operator verification.",
-    "createdAt": "2026-11-14T13:27:00.184Z"
+    "createdAt": "2026-11-14T13:27:00.184Z",
+    "confirmations": 3
   },
   {
     "id": "inc-1794662820182-310",
