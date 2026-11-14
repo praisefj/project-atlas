@@ -6,6 +6,7 @@ const path = require("path");
 
 const app = express();
 const PORT = process.env.PORT || 5000;
+const OPERATOR_PIN = process.env.OPERATOR_PIN || "2026";
 const INCIDENTS_FILE = path.join(__dirname, "data", "incidents.json");
 const ZONES_FILE = path.join(__dirname, "data", "zones.json");
 const NEWS_FILE = path.join(__dirname, "data", "news.json");
@@ -67,6 +68,14 @@ function readJson(filePath) {
 
 function writeJson(filePath, data) {
   fs.writeFileSync(filePath, JSON.stringify(data, null, 2), "utf-8");
+}
+
+function requireOperatorPin(req, res, next) {
+  const provided = String(req.headers["x-operator-pin"] || "");
+  if (provided !== OPERATOR_PIN) {
+    return res.status(403).json({ error: "Operator Command PIN required." });
+  }
+  next();
 }
 
 function decodeXml(raw = "") {
@@ -404,6 +413,18 @@ app.get("/api/health", (req, res) => {
   res.json({ status: "ok", project: "Project Atlas Tactical API" });
 });
 
+app.get("/api/landmarks", (req, res) => {
+  res.json(PH_LANDMARKS.filter((l) => l.specific));
+});
+
+app.post("/api/operator/auth", (req, res) => {
+  const { pin } = req.body;
+  if (String(pin || "") === OPERATOR_PIN) {
+    return res.json({ authenticated: true });
+  }
+  return res.status(401).json({ authenticated: false, error: "Invalid Operator Command PIN." });
+});
+
 app.get("/api/incidents", (req, res) => {
   const list = readJson(INCIDENTS_FILE).map((item) => ({
     ...item,
@@ -439,7 +460,7 @@ app.post("/api/incidents", (req, res) => {
   res.status(201).json(newIncident);
 });
 
-app.patch("/api/incidents/:id/verify", (req, res) => {
+app.patch("/api/incidents/:id/verify", requireOperatorPin, (req, res) => {
   const incidents = readJson(INCIDENTS_FILE);
   const target = incidents.find((item) => item.id === req.params.id);
   if (!target) {
@@ -474,7 +495,7 @@ app.post("/api/incidents/:id/corroborate", (req, res) => {
   res.json(target);
 });
 
-app.delete("/api/incidents/:id", (req, res) => {
+app.delete("/api/incidents/:id", requireOperatorPin, (req, res) => {
   const incidents = readJson(INCIDENTS_FILE);
   const filtered = incidents.filter((item) => item.id !== req.params.id);
   if (filtered.length === incidents.length) {
@@ -511,7 +532,7 @@ app.post("/api/zones", (req, res) => {
   res.status(201).json(newZone);
 });
 
-app.patch("/api/zones/:id/verify", (req, res) => {
+app.patch("/api/zones/:id/verify", requireOperatorPin, (req, res) => {
   const zones = readJson(ZONES_FILE);
   const target = zones.find((z) => z.id === req.params.id);
   if (!target) {
@@ -523,7 +544,7 @@ app.patch("/api/zones/:id/verify", (req, res) => {
   res.json(target);
 });
 
-app.delete("/api/zones/:id", (req, res) => {
+app.delete("/api/zones/:id", requireOperatorPin, (req, res) => {
   const zones = readJson(ZONES_FILE);
   const filtered = zones.filter((z) => z.id !== req.params.id);
   if (filtered.length === zones.length) {

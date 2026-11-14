@@ -41,7 +41,7 @@ body {
 }
 
 .topbar h1 {
-  font-size: 1.12rem;
+  font-size: 1.08rem;
   letter-spacing: 0.06em;
   text-transform: uppercase;
   color: #f8fafc;
@@ -50,14 +50,14 @@ body {
 .top-actions {
   display: flex;
   align-items: center;
-  gap: 0.35rem;
+  gap: 0.32rem;
 }
 
 .sync-btn {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 0.68rem;
+  font-size: 0.66rem;
   font-weight: 700;
-  padding: 0.22rem 0.55rem;
+  padding: 0.22rem 0.52rem;
   border-radius: 999px;
   background: rgba(56, 189, 248, 0.14);
   border: 1px solid rgba(56, 189, 248, 0.45);
@@ -75,8 +75,16 @@ body {
   color: #d8b4fe;
 }
 
-.sync-btn.sitrep:hover {
-  background: rgba(168, 85, 247, 0.25);
+.sync-btn.op-locked {
+  background: rgba(245, 158, 11, 0.14);
+  border-color: rgba(245, 158, 11, 0.45);
+  color: #fbbf24;
+}
+
+.sync-btn.op-unlocked {
+  background: rgba(16, 185, 129, 0.16);
+  border-color: rgba(16, 185, 129, 0.5);
+  color: #34d399;
 }
 
 .sync-btn:disabled {
@@ -84,20 +92,17 @@ body {
   cursor: wait;
 }
 
-.live-pill {
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 0.68rem;
-  padding: 0.22rem 0.5rem;
-  border-radius: 999px;
-  background: rgba(16, 185, 129, 0.14);
-  border: 1px solid rgba(16, 185, 129, 0.45);
-  color: #34d399;
+.pin-bar {
+  margin-top: 0.65rem;
+  display: flex;
+  gap: 0.4rem;
+  align-items: center;
 }
 
-.live-pill.offline {
-  background: rgba(239, 68, 68, 0.14);
-  border-color: rgba(239, 68, 68, 0.45);
-  color: #f87171;
+.pin-bar input {
+  padding: 0.34rem 0.55rem;
+  font-size: 0.76rem;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
 }
 
 .osint-toast {
@@ -509,6 +514,44 @@ input:focus, select:focus, textarea:focus {
 
 .leaflet-tile-pane {
   filter: invert(100%) hue-rotate(180deg) brightness(92%) contrast(95%) saturate(85%);
+}
+
+.map-hud-left {
+  position: absolute;
+  top: 14px;
+  left: 54px;
+  z-index: 1000;
+  background: rgba(9, 14, 26, 0.92);
+  border: 1px solid #1e293b;
+  backdrop-filter: blur(6px);
+  border-radius: 8px;
+  padding: 0.35rem;
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.map-hud-left select {
+  padding: 0.32rem 0.5rem;
+  font-size: 0.72rem;
+  width: auto;
+  background: #0f172a;
+}
+
+.layer-toggle {
+  background: #0f172a;
+  border: 1px solid #334155;
+  color: #64748b;
+  padding: 0.32rem 0.5rem;
+  border-radius: 5px;
+  font-size: 0.7rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.layer-toggle.on {
+  border-color: #38bdf8;
+  color: #e2e8f0;
 }
 
 .map-hud-top {

@@ -104,11 +104,25 @@ function App() {
   const [incidents, setIncidents] = useState([]);
   const [zones, setZones] = useState([]);
   const [news, setNews] = useState([]);
+  const [landmarks, setLandmarks] = useState([]);
   const [draftPolygon, setDraftPolygon] = useState([]);
   const [activeRoutePlan, setActiveRoutePlan] = useState(null);
   const [loadingRouteId, setLoadingRouteId] = useState(null);
   const [syncingOsint, setSyncingOsint] = useState(false);
   const [osintToast, setOsintToast] = useState("");
+
+  // Operator Role Auth State
+  const [operatorPin, setOperatorPin] = useState("");
+  const [isOperator, setIsOperator] = useState(false);
+  const [showPinPrompt, setShowPinPrompt] = useState(false);
+  const [pinInput, setPinInput] = useState("");
+
+  // Map Layer Visibility Toggles
+  const [layersVisible, setLayersVisible] = useState({
+    verified: true,
+    unverified: true,
+    geofences: true
+  });
 
   const [navForm, setNavForm] = useState({
     originLat: "4.8781",
@@ -272,16 +286,18 @@ function App() {
   }, [navForm, clickMode, activeTab]);
 
   async function loadGridData() {
-    const [health, incList, zoneList, newsList] = await Promise.all([
+    const [health, incList, zoneList, newsList, lmList] = await Promise.all([
       fetch("/api/health").then((r) => r.json()),
       fetch("/api/incidents").then((r) => r.json()),
       fetch("/api/zones").then((r) => r.json()),
-      fetch("/api/news").then((r) => r.json())
+      fetch("/api/news").then((r) => r.json()),
+      fetch("/api/landmarks").then((r) => r.json())
     ]);
     setOnline(health.status === "ok");
     setIncidents(incList);
     setZones(zoneList);
     setNews(newsList);
+    setLandmarks(lmList);
   }
 
   useEffect(() => {
@@ -320,42 +336,47 @@ function App() {
 
     const zoomScale = getZoomRadarScale(mapZoom);
 
-    filteredZones.forEach((zone) => {
-      if (!Array.isArray(zone.coordinates) || zone.coordinates.length < 3) return;
-      const theme = SEVERITY_THEME[zone.severity] || SEVERITY_THEME.High;
+    if (layersVisible.geofences) {
+      filteredZones.forEach((zone) => {
+        if (!Array.isArray(zone.coordinates) || zone.coordinates.length < 3) return;
+        const theme = SEVERITY_THEME[zone.severity] || SEVERITY_THEME.High;
 
-      if (zone.verified) {
-        L.polygon(zone.coordinates, {
-          color: theme.ring,
-          weight: 2,
-          opacity: 0.85,
-          fillColor: theme.core,
-          fillOpacity: 0.26
-        })
-          .bindPopup(
-            `<strong>${zone.name}</strong><br/>` +
-              `<span style="color:#34d399;font-size:11px;">VERIFIED GEOFENCE</span> &bull; ${zone.category}<br/>` +
-              `<small>${zone.notes || ""}</small>`
-          )
-          .addTo(zonesLayerRef.current);
-      } else {
-        L.polygon(zone.coordinates, {
-          color: "#fbbf24",
-          weight: 2,
-          opacity: 0.75,
-          fillColor: "#fbbf24",
-          fillOpacity: 0.14,
-          dashArray: "6 6"
-        })
-          .bindPopup(
-            `<strong>${zone.name}</strong><br/>` +
-              `<span style="color:#fbbf24;font-size:11px;">UNVERIFIED GEOFENCE</span> &bull; ${zone.category}`
-          )
-          .addTo(zonesLayerRef.current);
-      }
-    });
+        if (zone.verified) {
+          L.polygon(zone.coordinates, {
+            color: theme.ring,
+            weight: 2,
+            opacity: 0.85,
+            fillColor: theme.core,
+            fillOpacity: 0.26
+          })
+            .bindPopup(
+              `<strong>${zone.name}</strong><br/>` +
+                `<span style="color:#34d399;font-size:11px;">VERIFIED GEOFENCE</span> &bull; ${zone.category}<br/>` +
+                `<small>${zone.notes || ""}</small>`
+            )
+            .addTo(zonesLayerRef.current);
+        } else {
+          L.polygon(zone.coordinates, {
+            color: "#fbbf24",
+            weight: 2,
+            opacity: 0.75,
+            fillColor: "#fbbf24",
+            fillOpacity: 0.14,
+            dashArray: "6 6"
+          })
+            .bindPopup(
+              `<strong>${zone.name}</strong><br/>` +
+                `<span style="color:#fbbf24;font-size:11px;">UNVERIFIED GEOFENCE</span> &bull; ${zone.category}`
+            )
+            .addTo(zonesLayerRef.current);
+        }
+      });
+    }
 
     filteredIncidents.forEach((item) => {
+      if (item.verified && !layersVisible.verified) return;
+      if (!item.verified && !layersVisible.unverified) return;
+
       const theme = SEVERITY_THEME[item.severity] || SEVERITY_THEME.Medium;
       const baseRadius = Number(item.radiusMeters) || 1000;
       const effectiveRadius = baseRadius * zoomScale;
@@ -407,7 +428,7 @@ function App() {
         )
         .addTo(zonesLayerRef.current);
     });
-  }, [filteredIncidents, filteredZones, mapZoom]);
+  }, [filteredIncidents, filteredZones, mapZoom, layersVisible]);
 
   useEffect(() => {
     if (!routesLayerRef.current) return;
@@ -464,6 +485,37 @@ function App() {
       mapRef.current.fitBounds(allBounds, { padding: [55, 55] });
     }
   }, [activeRoutePlan]);
+
+  async function handleOperatorAuth(e) {
+    e.preventDefault();
+    const res = await fetch("/api/operator/auth", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ pin: pinInput })
+    });
+    if (res.ok) {
+      setOperatorPin(pinInput);
+      setIsOperator(true);
+      setShowPinPrompt(false);
+      setPinInput("");
+      setOsintToast("Operator Command Mode unlocked.");
+    } else {
+      setOsintToast("Invalid Command PIN (default: 2026).");
+    }
+  }
+
+  function handleLockOperator() {
+    setIsOperator(false);
+    setOperatorPin("");
+    setOsintToast("Operator Mode locked (Public/Field Scout view).");
+  }
+
+  function requireOperatorUi() {
+    if (isOperator) return true;
+    setShowPinPrompt(true);
+    setOsintToast("Unlock Operator Mode (PIN: 2026) to verify or delete zones.");
+    return false;
+  }
 
   async function handleSyncOsint() {
     setSyncingOsint(true);
@@ -590,8 +642,10 @@ function App() {
   }
 
   async function handleToggleVerify(id) {
+    if (!requireOperatorUi()) return;
     const response = await fetch(`/api/incidents/${id}/verify`, {
-      method: "PATCH"
+      method: "PATCH",
+      headers: { "x-operator-pin": operatorPin }
     });
     if (response.ok) {
       const updated = await response.json();
@@ -602,8 +656,10 @@ function App() {
   }
 
   async function handleToggleZoneVerify(id) {
+    if (!requireOperatorUi()) return;
     const response = await fetch(`/api/zones/${id}/verify`, {
-      method: "PATCH"
+      method: "PATCH",
+      headers: { "x-operator-pin": operatorPin }
     });
     if (response.ok) {
       const updated = await response.json();
@@ -612,7 +668,11 @@ function App() {
   }
 
   async function handleDeleteZone(id) {
-    const response = await fetch(`/api/zones/${id}`, { method: "DELETE" });
+    if (!requireOperatorUi()) return;
+    const response = await fetch(`/api/zones/${id}`, {
+      method: "DELETE",
+      headers: { "x-operator-pin": operatorPin }
+    });
     if (response.ok) {
       setZones((prev) => prev.filter((z) => z.id !== id));
     }
@@ -641,7 +701,11 @@ function App() {
   }
 
   async function handleDeleteIncident(id) {
-    const response = await fetch(`/api/incidents/${id}`, { method: "DELETE" });
+    if (!requireOperatorUi()) return;
+    const response = await fetch(`/api/incidents/${id}`, {
+      method: "DELETE",
+      headers: { "x-operator-pin": operatorPin }
+    });
     if (response.ok) {
       setIncidents((prev) => prev.filter((item) => item.id !== id));
     }
@@ -716,6 +780,23 @@ function App() {
           <div className="topbar-row">
             <h1>Project Atlas</h1>
             <div className="top-actions">
+              {isOperator ? (
+                <button
+                  className="sync-btn op-unlocked"
+                  onClick={handleLockOperator}
+                  title="Operator Mode Active — Click to lock"
+                >
+                  OP: UNLOCKED
+                </button>
+              ) : (
+                <button
+                  className="sync-btn op-locked"
+                  onClick={() => setShowPinPrompt((prev) => !prev)}
+                  title="Unlock Operator Command Mode (PIN: 2026)"
+                >
+                  OP: LOCKED
+                </button>
+              )}
               <button
                 className="sync-btn sitrep"
                 onClick={handleExportSitrep}
@@ -731,11 +812,23 @@ function App() {
               >
                 {syncingOsint ? "SCAN..." : "OSINT"}
               </button>
-              <span className={`live-pill ${online ? "" : "offline"}`}>
-                {online ? "LIVE" : "OFF"}
-              </span>
             </div>
           </div>
+
+          {showPinPrompt && !isOperator && (
+            <form className="pin-bar" onSubmit={handleOperatorAuth}>
+              <input
+                type="password"
+                placeholder="Enter Command PIN (2026)"
+                value={pinInput}
+                onChange={(e) => setPinInput(e.target.value)}
+                autoFocus
+              />
+              <button className="btn-sm verify-btn" type="submit">
+                Unlock
+              </button>
+            </form>
+          )}
 
           {osintToast && (
             <div className="osint-toast">
@@ -760,7 +853,7 @@ function App() {
               <div className="kpi-label">Pending Verify</div>
             </div>
             <div className="kpi-box">
-              <div className="kpi-val ok">{news.length}</div>
+              <div className="kpi-val ok">{online ? news.length : "OFF"}</div>
               <div className="kpi-label">Intel Wires</div>
             </div>
           </div>
@@ -848,7 +941,11 @@ function App() {
                         <button
                           className="icon-del"
                           onClick={() => handleDeleteZone(zone.id)}
-                          title="Delete polygon zone"
+                          title={
+                            isOperator
+                              ? "Delete polygon zone"
+                              : "Operator PIN required to delete"
+                          }
                         >
                           &times;
                         </button>
@@ -873,7 +970,13 @@ function App() {
                           className="btn-sm verify-btn"
                           onClick={() => handleToggleZoneVerify(zone.id)}
                         >
-                          {zone.verified ? "Revoke Verify" : "Verify Geofence"}
+                          {zone.verified
+                            ? isOperator
+                              ? "Revoke Verify"
+                              : "Locked (OP)"
+                            : isOperator
+                            ? "Verify Geofence"
+                            : "Verify (OP PIN)"}
                         </button>
                       </div>
                     </div>
@@ -898,7 +1001,11 @@ function App() {
                     <button
                       className="icon-del"
                       onClick={() => handleDeleteIncident(item.id)}
-                      title="Delete report"
+                      title={
+                        isOperator
+                          ? "Delete report"
+                          : "Operator PIN required to delete"
+                      }
                     >
                       &times;
                     </button>
@@ -946,7 +1053,13 @@ function App() {
                       className="btn-sm verify-btn"
                       onClick={() => handleToggleVerify(item.id)}
                     >
-                      {item.verified ? "Revoke" : "Verify"}
+                      {item.verified
+                        ? isOperator
+                          ? "Revoke"
+                          : "Locked"
+                        : isOperator
+                        ? "Verify"
+                        : "OP Verify"}
                     </button>
                     <button
                       className="btn-sm route-btn"
@@ -1091,7 +1204,7 @@ function App() {
               <p className="card-notes">
                 {reportType === "polygon"
                   ? `Click at least 3 boundary points on the map to trace a floodbasin or cordoned area (${draftPolygon.length} point(s) plotted).`
-                  : "Click anywhere on the map to lock GPS coordinates. New reports auto-verify at 3 field confirmations."}
+                  : "Click anywhere on the map to lock GPS coordinates. New reports auto-verify at 3 field confirmations or via Operator PIN."}
               </p>
 
               <div>
@@ -1299,6 +1412,51 @@ function App() {
       <div className="map-wrapper">
         <main ref={mapContainerRef} className="map-container" />
 
+        <div className="map-hud-left">
+          <select
+            defaultValue=""
+            onChange={(e) => {
+              const selected = landmarks.find((l) => l.name === e.target.value);
+              if (selected && mapRef.current) {
+                mapRef.current.flyTo([selected.lat, selected.lng], 14);
+              }
+            }}
+          >
+            <option value="" disabled>
+              Jump to Sector...
+            </option>
+            {landmarks.map((lm) => (
+              <option key={lm.name} value={lm.name}>
+                {lm.name}
+              </option>
+            ))}
+          </select>
+          <button
+            className={`layer-toggle ${layersVisible.verified ? "on" : ""}`}
+            onClick={() =>
+              setLayersVisible((p) => ({ ...p, verified: !p.verified }))
+            }
+          >
+            Verified
+          </button>
+          <button
+            className={`layer-toggle ${layersVisible.unverified ? "on" : ""}`}
+            onClick={() =>
+              setLayersVisible((p) => ({ ...p, unverified: !p.unverified }))
+            }
+          >
+            Pending
+          </button>
+          <button
+            className={`layer-toggle ${layersVisible.geofences ? "on" : ""}`}
+            onClick={() =>
+              setLayersVisible((p) => ({ ...p, geofences: !p.geofences }))
+            }
+          >
+            Geofences
+          </button>
+        </div>
+
         <div className="map-hud-top">
           <span
             style={{
@@ -1309,7 +1467,7 @@ function App() {
               borderRight: "1px solid #1e293b"
             }}
           >
-            Z{mapZoom} &bull; RADAR {radarPct}%
+            Z{mapZoom} &bull; {radarPct}%
           </span>
           <button
             className={`hud-btn ${clickMode === "report" ? "active" : ""}`}
@@ -1318,7 +1476,7 @@ function App() {
               setReportType("point");
             }}
           >
-            Pin Incident
+            Pin
           </button>
           <button
             className={`hud-btn ${clickMode === "draw" ? "active" : ""}`}
@@ -1328,7 +1486,7 @@ function App() {
               setActiveTab("report");
             }}
           >
-            Draw Zone
+            Zone
           </button>
           <button
             className={`hud-btn ${clickMode === "nav" ? "active" : ""}`}
@@ -1337,7 +1495,7 @@ function App() {
               setActiveTab("nav");
             }}
           >
-            Set A &rarr; B
+            A &rarr; B
           </button>
         </div>
 
