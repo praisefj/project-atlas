@@ -1,24 +1,37 @@
 const fs = require("fs");
+const os = require("os");
 const path = require("path");
 const { Pool } = require("pg");
 require("dotenv").config({ path: path.join(__dirname, ".env") });
 
-const INCIDENTS_FILE = path.join(__dirname, "data", "incidents.json");
-const ZONES_FILE = path.join(__dirname, "data", "zones.json");
-const NEWS_FILE = path.join(__dirname, "data", "news.json");
+const SEED_DIR = path.join(__dirname, "data");
+const TMP_DIR = path.join(os.tmpdir(), "project-atlas-data");
 const SCHEMA_FILE = path.join(__dirname, "schema.sql");
 const VERIFY_THRESHOLD = 3;
 
 let pool = null;
 let usePostgis = false;
 
-function readJson(filePath) {
+function resolveDataPath(filename) {
+  const tmpPath = path.join(TMP_DIR, filename);
+  if (fs.existsSync(tmpPath)) return tmpPath;
+  return path.join(SEED_DIR, filename);
+}
+
+function readJson(filename) {
+  const filePath = resolveDataPath(filename);
   if (!fs.existsSync(filePath)) return [];
   return JSON.parse(fs.readFileSync(filePath, "utf-8"));
 }
 
-function writeJson(filePath, data) {
-  fs.writeFileSync(filePath, JSON.stringify(data, null, 2), "utf-8");
+function writeJson(filename, data) {
+  const serialized = JSON.stringify(data, null, 2);
+  try {
+    fs.writeFileSync(path.join(SEED_DIR, filename), serialized, "utf-8");
+  } catch {
+    if (!fs.existsSync(TMP_DIR)) fs.mkdirSync(TMP_DIR, { recursive: true });
+    fs.writeFileSync(path.join(TMP_DIR, filename), serialized, "utf-8");
+  }
 }
 
 function toPolygonWkt(coords) {
@@ -59,21 +72,21 @@ async function initDatabase() {
 
     const { rows: incCount } = await pool.query("SELECT COUNT(*)::int AS c FROM incidents");
     if (incCount[0].c === 0) {
-      for (const item of readJson(INCIDENTS_FILE)) {
+      for (const item of readJson("incidents.json")) {
         await createIncident(item);
       }
     }
 
     const { rows: zoneCount } = await pool.query("SELECT COUNT(*)::int AS c FROM zones");
     if (zoneCount[0].c === 0) {
-      for (const z of readJson(ZONES_FILE)) {
+      for (const z of readJson("zones.json")) {
         await createZone(z);
       }
     }
 
     const { rows: newsCount } = await pool.query("SELECT COUNT(*)::int AS c FROM news");
     if (newsCount[0].c === 0) {
-      for (const n of readJson(NEWS_FILE).reverse()) {
+      for (const n of readJson("news.json").reverse()) {
         await createNews(n);
       }
     }
@@ -113,7 +126,7 @@ function mapIncidentRow(row) {
 
 async function getIncidents() {
   if (!usePostgis) {
-    return readJson(INCIDENTS_FILE).map((item) => ({
+    return readJson("incidents.json").map((item) => ({
       ...item,
       confirmations: Number(item.confirmations) || (item.verified ? VERIFY_THRESHOLD : 1)
     }));
@@ -143,9 +156,9 @@ async function createIncident(data) {
   };
 
   if (!usePostgis) {
-    const list = readJson(INCIDENTS_FILE);
+    const list = readJson("incidents.json");
     list.unshift(item);
-    writeJson(INCIDENTS_FILE, list);
+    writeJson("incidents.json", list);
     return item;
   }
 
@@ -179,11 +192,11 @@ async function createIncident(data) {
 
 async function updateIncident(id, patch) {
   if (!usePostgis) {
-    const list = readJson(INCIDENTS_FILE);
+    const list = readJson("incidents.json");
     const target = list.find((i) => i.id === id);
     if (!target) return null;
     Object.assign(target, patch);
-    writeJson(INCIDENTS_FILE, list);
+    writeJson("incidents.json", list);
     return target;
   }
 
@@ -204,10 +217,10 @@ async function updateIncident(id, patch) {
 
 async function deleteIncident(id) {
   if (!usePostgis) {
-    const list = readJson(INCIDENTS_FILE);
+    const list = readJson("incidents.json");
     const filtered = list.filter((i) => i.id !== id);
     if (filtered.length === list.length) return false;
-    writeJson(INCIDENTS_FILE, filtered);
+    writeJson("incidents.json", filtered);
     return true;
   }
   const { rowCount } = await pool.query("DELETE FROM incidents WHERE id = $1", [id]);
@@ -216,7 +229,7 @@ async function deleteIncident(id) {
 
 async function replaceIncidents(list) {
   if (!usePostgis) {
-    writeJson(INCIDENTS_FILE, list);
+    writeJson("incidents.json", list);
     return;
   }
   const existing = await getIncidents();
@@ -249,7 +262,7 @@ function mapZoneRow(row) {
 }
 
 async function getZones() {
-  if (!usePostgis) return readJson(ZONES_FILE);
+  if (!usePostgis) return readJson("zones.json");
   const { rows } = await pool.query("SELECT * FROM zones ORDER BY created_at DESC");
   return rows.map(mapZoneRow);
 }
@@ -267,9 +280,9 @@ async function createZone(data) {
   };
 
   if (!usePostgis) {
-    const list = readJson(ZONES_FILE);
+    const list = readJson("zones.json");
     list.unshift(zone);
-    writeJson(ZONES_FILE, list);
+    writeJson("zones.json", list);
     return zone;
   }
 
@@ -295,11 +308,11 @@ async function createZone(data) {
 
 async function toggleZoneVerify(id) {
   if (!usePostgis) {
-    const list = readJson(ZONES_FILE);
+    const list = readJson("zones.json");
     const target = list.find((z) => z.id === id);
     if (!target) return null;
     target.verified = !target.verified;
-    writeJson(ZONES_FILE, list);
+    writeJson("zones.json", list);
     return target;
   }
   const { rows } = await pool.query(
@@ -311,10 +324,10 @@ async function toggleZoneVerify(id) {
 
 async function deleteZone(id) {
   if (!usePostgis) {
-    const list = readJson(ZONES_FILE);
+    const list = readJson("zones.json");
     const filtered = list.filter((z) => z.id !== id);
     if (filtered.length === list.length) return false;
-    writeJson(ZONES_FILE, filtered);
+    writeJson("zones.json", filtered);
     return true;
   }
   const { rowCount } = await pool.query("DELETE FROM zones WHERE id = $1", [id]);
@@ -322,7 +335,7 @@ async function deleteZone(id) {
 }
 
 async function getNews() {
-  if (!usePostgis) return readJson(NEWS_FILE);
+  if (!usePostgis) return readJson("news.json");
   const { rows } = await pool.query("SELECT * FROM news ORDER BY created_at DESC LIMIT 60");
   return rows.map((r) => ({
     id: r.id,
@@ -349,9 +362,9 @@ async function createNews(data) {
   };
 
   if (!usePostgis) {
-    const list = readJson(NEWS_FILE);
+    const list = readJson("news.json");
     list.unshift(entry);
-    writeJson(NEWS_FILE, list.slice(0, 60));
+    writeJson("news.json", list.slice(0, 60));
     return entry;
   }
 
@@ -375,7 +388,7 @@ async function createNews(data) {
 
 async function replaceNews(list) {
   if (!usePostgis) {
-    writeJson(NEWS_FILE, list.slice(0, 60));
+    writeJson("news.json", list.slice(0, 60));
     return;
   }
   await pool.query("DELETE FROM news");

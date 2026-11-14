@@ -843,11 +843,20 @@ app.post("/api/routes/navigate", async (req, res) => {
   });
 });
 
-db.initDatabase().then(({ mode }) => {
-  app.listen(PORT, () => {
-    console.log(`Project Atlas Tactical API running on http://localhost:${PORT} [storage: ${mode}]`);
-    setInterval(() => {
-      runOsintIngestion().catch(() => {});
-    }, 10 * 60 * 1000);
+const initPromise = db.initDatabase();
+
+if (require.main === module) {
+  initPromise.then(({ mode }) => {
+    app.listen(PORT, () => {
+      console.log(`Project Atlas Tactical API running on http://localhost:${PORT} [storage: ${mode}]`);
+      setInterval(() => {
+        runOsintIngestion().catch(() => {});
+      }, 10 * 60 * 1000);
+    });
   });
-});
+}
+
+module.exports = async (req, res) => {
+  await initPromise;
+  return app(req, res);
+};
