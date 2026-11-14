@@ -96,6 +96,7 @@ function App() {
 
   const [online, setOnline] = useState(false);
   const [mapZoom, setMapZoom] = useState(12);
+  const [cursorGps, setCursorGps] = useState({ lat: 4.8156, lng: 7.0498 });
   const [timeWindow, setTimeWindow] = useState("all");
   const [activeTab, setActiveTab] = useState("feed");
   const [clickMode, setClickMode] = useState("report");
@@ -111,13 +112,11 @@ function App() {
   const [syncingOsint, setSyncingOsint] = useState(false);
   const [osintToast, setOsintToast] = useState("");
 
-  // Operator Role Auth State
   const [operatorPin, setOperatorPin] = useState("");
   const [isOperator, setIsOperator] = useState(false);
   const [showPinPrompt, setShowPinPrompt] = useState(false);
   const [pinInput, setPinInput] = useState("");
 
-  // Map Layer Visibility Toggles
   const [layersVisible, setLayersVisible] = useState({
     verified: true,
     unverified: true,
@@ -170,6 +169,13 @@ function App() {
 
     map.on("zoom zoomend", () => {
       setMapZoom(map.getZoom());
+    });
+
+    map.on("mousemove", (e) => {
+      setCursorGps({
+        lat: Number(e.latlng.lat.toFixed(5)),
+        lng: Number(e.latlng.lng.toFixed(5))
+      });
     });
 
     map.on("click", (e) => {
@@ -302,6 +308,10 @@ function App() {
 
   useEffect(() => {
     loadGridData().catch(() => setOnline(false));
+    const timer = setInterval(() => {
+      loadGridData().catch(() => setOnline(false));
+    }, 30000);
+    return () => clearInterval(timer);
   }, []);
 
   const activeTimeSpec =
@@ -513,7 +523,7 @@ function App() {
   function requireOperatorUi() {
     if (isOperator) return true;
     setShowPinPrompt(true);
-    setOsintToast("Unlock Operator Mode (PIN: 2026) to verify or delete zones.");
+    setOsintToast("Unlock Operator Mode (PIN: 2026) to manage zones.");
     return false;
   }
 
@@ -641,6 +651,24 @@ function App() {
     }
   }
 
+  async function handleSeverityChange(id, severity) {
+    if (!requireOperatorUi()) return;
+    const response = await fetch(`/api/incidents/${id}`, {
+      method: "PATCH",
+      headers: {
+        "Content-Type": "application/json",
+        "x-operator-pin": operatorPin
+      },
+      body: JSON.stringify({ severity })
+    });
+    if (response.ok) {
+      const updated = await response.json();
+      setIncidents((prev) =>
+        prev.map((item) => (item.id === id ? updated : item))
+      );
+    }
+  }
+
   async function handleToggleVerify(id) {
     if (!requireOperatorUi()) return;
     const response = await fetch(`/api/incidents/${id}/verify`, {
@@ -734,6 +762,24 @@ function App() {
     zones.filter((z) => !z.verified).length;
   const totalCount = incidents.length + zones.length;
   const radarPct = Math.max(2, Math.round(getZoomRadarScale(mapZoom) * 100));
+
+  // Threat Analytics Computations
+  const allItems = [...incidents, ...zones];
+  const highVerified = allItems.filter((x) => x.verified && x.severity === "High").length;
+  const threatStatus =
+    highVerified >= 3
+      ? { label: "CRITICAL", bg: "rgba(255,42,85,0.2)", color: "#ff2a55" }
+      : highVerified >= 1
+      ? { label: "HIGH ALERT", bg: "rgba(255,153,0,0.2)", color: "#ff9900" }
+      : { label: "GUARDED", bg: "rgba(16,185,129,0.2)", color: "#34d399" };
+
+  const categories = ["Flooding", "Road Blockage", "Hazard", "Infrastructure"];
+  const catColors = {
+    Flooding: "#38bdf8",
+    "Road Blockage": "#f59e0b",
+    Hazard: "#ff2a55",
+    Infrastructure: "#a855f7"
+  };
 
   const renderRoutePanel = () => {
     if (!activeRoutePlan) return null;
@@ -890,6 +936,12 @@ function App() {
           >
             Intel Wire
           </button>
+          <button
+            className={`nav-tab ${activeTab === "stats" ? "active" : ""}`}
+            onClick={() => setActiveTab("stats")}
+          >
+            Stats
+          </button>
         </nav>
 
         <div className="sidebar-body">
@@ -1024,6 +1076,20 @@ function App() {
                     )}
                     <span className="tag">{item.category}</span>
                     <span className="tag">{item.radiusMeters}m</span>
+                    {isOperator && (
+                      <select
+                        className="sev-select"
+                        value={item.severity}
+                        onChange={(e) =>
+                          handleSeverityChange(item.id, e.target.value)
+                        }
+                        title="Escalate or de-escalate threat intensity"
+                      >
+                        <option value="High">High</option>
+                        <option value="Medium">Medium</option>
+                        <option value="Low">Low</option>
+                      </select>
+                    )}
                   </div>
 
                   {item.notes && <p className="card-notes">{item.notes}</p>}
@@ -1406,6 +1472,92 @@ function App() {
               ))}
             </>
           )}
+
+          {activeTab === "stats" && (
+            <>
+              <div className="defcon-card">
+                <div>
+                  <div className="kpi-label">Port Harcourt Grid Posture</div>
+                  <div style={{ fontSize: "0.84rem", marginTop: "3px" }}>
+                    {highVerified} Verified High-Intensity Zone(s)
+                  </div>
+                </div>
+                <span
+                  className="defcon-badge"
+                  style={{ background: threatStatus.bg, color: threatStatus.color }}
+                >
+                  {threatStatus.label}
+                </span>
+              </div>
+
+              <div className="stat-card">
+                <div className="section-label" style={{ marginTop: 0 }}>
+                  Incidents by Hazard Category
+                </div>
+                {categories.map((cat) => {
+                  const count = allItems.filter((i) => i.category === cat).length;
+                  const pct = totalCount ? Math.round((count / totalCount) * 100) : 0;
+                  return (
+                    <div key={cat} className="stat-row">
+                      <div className="stat-row-top">
+                        <span>{cat}</span>
+                        <span>
+                          {count} ({pct}%)
+                        </span>
+                      </div>
+                      <div className="bar-track">
+                        <div
+                          className="bar-fill"
+                          style={{
+                            width: `${pct}%`,
+                            background: catColors[cat] || "#38bdf8"
+                          }}
+                        />
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+
+              <div className="stat-card">
+                <div className="section-label" style={{ marginTop: 0 }}>
+                  Verification &amp; Trust Telemetry
+                </div>
+                <div className="stat-row">
+                  <div className="stat-row-top">
+                    <span>Verified / Confirmed Zones</span>
+                    <span>
+                      {verifiedCount} / {totalCount}
+                    </span>
+                  </div>
+                  <div className="bar-track">
+                    <div
+                      className="bar-fill"
+                      style={{
+                        width: `${totalCount ? Math.round((verifiedCount / totalCount) * 100) : 0}%`,
+                        background: "#10b981"
+                      }}
+                    />
+                  </div>
+                </div>
+                <div className="stat-row">
+                  <div className="stat-row-top">
+                    <span>Auto-Geocoded OSINT Reports</span>
+                    <span>{incidents.filter((i) => i.autoGeocoded).length}</span>
+                  </div>
+                  <div className="bar-track">
+                    <div
+                      className="bar-fill"
+                      style={{
+                        width: `${incidents.length ? Math.round((incidents.filter((i) => i.autoGeocoded).length / incidents.length) * 100) : 0}%`,
+                        background: "#38bdf8"
+                      }}
+                    />
+                  </div>
+                </div>
+              </div>
+            </>
+          )}
         </div>
       </aside>
 
@@ -1532,7 +1684,7 @@ function App() {
         )}
 
         <div className="timeline-hud">
-          <span style={{ color: "#64748b", marginRight: "0.25rem" }}>
+          <span style={{ color: "#64748b", marginRight: "0.2rem" }}>
             WINDOW:
           </span>
           {TIME_WINDOWS.map((tw) => (
@@ -1544,6 +1696,9 @@ function App() {
               {tw.label}
             </button>
           ))}
+          <span className="gps-readout">
+            {cursorGps.lat.toFixed(4)}&deg;N, {cursorGps.lng.toFixed(4)}&deg;E
+          </span>
         </div>
 
         <div className="map-legend">

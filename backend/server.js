@@ -103,6 +103,10 @@ function formatRelativeTime(publishedMs) {
   return `${diffDays}d ago`;
 }
 
+function containsPastYear(text = "") {
+  return /\b202[0-5]\b/.test(text);
+}
+
 function parseRssItems(xml, fallbackSource) {
   const items = [];
   const itemMatches = xml.match(/<item\b[\s\S]*?<\/item>/gi) || [];
@@ -122,7 +126,11 @@ function parseRssItems(xml, fallbackSource) {
     const pubDateRaw = decodeXml(pubDateMatch ? pubDateMatch[1] : "");
     const publishedMs = pubDateRaw ? Date.parse(pubDateRaw) : NaN;
 
-    if (!Number.isNaN(publishedMs) && now - publishedMs > MAX_ARTICLE_AGE_MS) {
+    // Require a valid recent publication date and reject past-year archive headlines
+    if (Number.isNaN(publishedMs) || now - publishedMs > MAX_ARTICLE_AGE_MS) {
+      continue;
+    }
+    if (containsPastYear(`${title} ${description}`)) {
       continue;
     }
 
@@ -132,7 +140,7 @@ function parseRssItems(xml, fallbackSource) {
         link,
         source,
         description,
-        publishedMs: Number.isNaN(publishedMs) ? now : publishedMs
+        publishedMs
       });
     }
   }
@@ -191,15 +199,18 @@ async function runOsintIngestion() {
   const now = Date.now();
 
   const existingNews = readJson(NEWS_FILE).filter((n) => {
+    if (containsPastYear(n.headline)) return false;
     if (n.publishedAt && now - Date.parse(n.publishedAt) > MAX_ARTICLE_AGE_MS) return false;
     return true;
   });
 
   const existingIncidents = readJson(INCIDENTS_FILE).filter((inc) => {
     if (!inc.autoGeocoded || inc.verified) return true;
+    if (containsPastYear(`${inc.title} ${inc.notes || ""}`)) return false;
     if ((inc.notes || "").includes("(Port Harcourt Metro)")) return false;
-    const refTime = inc.publishedAt ? Date.parse(inc.publishedAt) : Date.parse(inc.createdAt);
-    if (!Number.isNaN(refTime) && now - refTime > MAX_ARTICLE_AGE_MS) return false;
+    if (!inc.publishedAt) return false;
+    const refTime = Date.parse(inc.publishedAt);
+    if (Number.isNaN(refTime) || now - refTime > MAX_ARTICLE_AGE_MS) return false;
     return true;
   });
 
@@ -276,6 +287,7 @@ async function runOsintIngestion() {
         verified: false,
         confirmations: 1,
         autoGeocoded: true,
+        landmark: landmark.name,
         sourceName: item.source || "OSINT Feed",
         sourceUrl: item.link || "",
         radiusMeters: hazard.radiusMeters,
@@ -458,6 +470,25 @@ app.post("/api/incidents", (req, res) => {
   incidents.unshift(newIncident);
   writeJson(INCIDENTS_FILE, incidents);
   res.status(201).json(newIncident);
+});
+
+app.patch("/api/incidents/:id", requireOperatorPin, (req, res) => {
+  const incidents = readJson(INCIDENTS_FILE);
+  const target = incidents.find((item) => item.id === req.params.id);
+  if (!target) {
+    return res.status(404).json({ error: "Incident not found." });
+  }
+
+  const { severity, radiusMeters } = req.body;
+  if (["High", "Medium", "Low"].includes(severity)) {
+    target.severity = severity;
+  }
+  if (radiusMeters !== undefined && !Number.isNaN(Number(radiusMeters))) {
+    target.radiusMeters = Math.max(200, Math.min(10000, Number(radiusMeters)));
+  }
+
+  writeJson(INCIDENTS_FILE, incidents);
+  res.json(target);
 });
 
 app.patch("/api/incidents/:id/verify", requireOperatorPin, (req, res) => {
