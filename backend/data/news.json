@@ -1,0 +1,23 @@
+[
+  {
+    "id": "news-1",
+    "source": "NIMET Coastal Watch",
+    "tag": "WEATHER",
+    "headline": "Heavy convective rainfall expected across Port Harcourt & Oyigbo axis through evening.",
+    "timestamp": "14 mins ago"
+  },
+  {
+    "id": "news-2",
+    "source": "Rivers Traffic Command",
+    "tag": "TRANSIT",
+    "headline": "Diversion active at Garrison; motorists routed via Trans-Amadi and Peter Odili corridors.",
+    "timestamp": "38 mins ago"
+  },
+  {
+    "id": "news-3",
+    "source": "Atlas OSINT Desk",
+    "tag": "VERIFIED",
+    "headline": "Drainage clearing teams deployed along Peter Odili Road; water levels receding.",
+    "timestamp": "1 hr ago"
+  }
+]
