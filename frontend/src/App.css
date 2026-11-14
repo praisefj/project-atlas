@@ -195,6 +195,15 @@ body {
   color: #f8fafc;
 }
 
+.section-label {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: #64748b;
+  margin-top: 0.25rem;
+}
+
 .incident-card {
   background: #0f172a;
   border: 1px solid #1e293b;
@@ -261,6 +270,12 @@ body {
   background: rgba(56, 189, 248, 0.15);
   color: #38bdf8;
   border: 1px solid rgba(56, 189, 248, 0.4);
+}
+
+.tag.geofence {
+  background: rgba(168, 85, 247, 0.16);
+  color: #d8b4fe;
+  border: 1px solid rgba(168, 85, 247, 0.45);
 }
 
 .card-notes {
@@ -433,6 +448,11 @@ input:focus, select:focus, textarea:focus {
   background: #0369a1;
 }
 
+.btn-primary:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
 .news-card {
   background: #0f172a;
   border: 1px solid #1e293b;
@@ -486,16 +506,17 @@ input:focus, select:focus, textarea:focus {
   border-radius: 8px;
   padding: 0.35rem;
   display: flex;
-  gap: 0.35rem;
+  align-items: center;
+  gap: 0.3rem;
 }
 
 .hud-btn {
   background: transparent;
   border: 1px solid transparent;
   color: #94a3b8;
-  padding: 0.38rem 0.65rem;
+  padding: 0.38rem 0.6rem;
   border-radius: 6px;
-  font-size: 0.74rem;
+  font-size: 0.72rem;
   font-weight: 600;
   cursor: pointer;
 }
@@ -504,6 +525,23 @@ input:focus, select:focus, textarea:focus {
   background: #0f172a;
   border-color: #38bdf8;
   color: #38bdf8;
+}
+
+.draw-toolbar {
+  position: absolute;
+  bottom: 24px;
+  left: 16px;
+  z-index: 1000;
+  background: rgba(9, 14, 26, 0.95);
+  border: 1px solid #a855f7;
+  box-shadow: 0 0 20px rgba(168, 85, 247, 0.28);
+  backdrop-filter: blur(6px);
+  border-radius: 8px;
+  padding: 0.6rem 0.8rem;
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  font-size: 0.75rem;
 }
 
 .map-legend {

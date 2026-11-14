@@ -46,7 +46,6 @@ const SEVERITY_THEME = {
   }
 };
 
-// Contracts radar radius smoothly as zoom increases above level 12
 function getZoomRadarScale(zoom) {
   if (zoom <= 12) return 1;
   return Math.max(0.015, Math.pow(0.46, zoom - 12));
@@ -82,6 +81,7 @@ function App() {
   const zonesLayerRef = useRef(null);
   const routesLayerRef = useRef(null);
   const navPinsLayerRef = useRef(null);
+  const draftPolyLayerRef = useRef(null);
   const draftMarkerRef = useRef(null);
   const clickModeRef = useRef("report");
   const navStepRef = useRef("origin");
@@ -90,9 +90,12 @@ function App() {
   const [mapZoom, setMapZoom] = useState(12);
   const [activeTab, setActiveTab] = useState("feed");
   const [clickMode, setClickMode] = useState("report");
+  const [reportType, setReportType] = useState("point");
   const [verifyFilter, setVerifyFilter] = useState("all");
   const [incidents, setIncidents] = useState([]);
+  const [zones, setZones] = useState([]);
   const [news, setNews] = useState([]);
+  const [draftPolygon, setDraftPolygon] = useState([]);
   const [activeRoutePlan, setActiveRoutePlan] = useState(null);
   const [loadingRouteId, setLoadingRouteId] = useState(null);
   const [syncingOsint, setSyncingOsint] = useState(false);
@@ -140,28 +143,42 @@ function App() {
     zonesLayerRef.current = L.layerGroup().addTo(map);
     routesLayerRef.current = L.layerGroup().addTo(map);
     navPinsLayerRef.current = L.layerGroup().addTo(map);
+    draftPolyLayerRef.current = L.layerGroup().addTo(map);
 
     map.on("zoom zoomend", () => {
       setMapZoom(map.getZoom());
     });
 
     map.on("click", (e) => {
-      const lat = e.latlng.lat.toFixed(5);
-      const lng = e.latlng.lng.toFixed(5);
+      const lat = Number(e.latlng.lat.toFixed(5));
+      const lng = Number(e.latlng.lng.toFixed(5));
+
+      if (clickModeRef.current === "draw") {
+        setDraftPolygon((prev) => [...prev, [lat, lng]]);
+        return;
+      }
 
       if (clickModeRef.current === "nav") {
         setActiveTab("nav");
         if (navStepRef.current === "origin") {
-          setNavForm((prev) => ({ ...prev, originLat: lat, originLng: lng }));
+          setNavForm((prev) => ({
+            ...prev,
+            originLat: String(lat),
+            originLng: String(lng)
+          }));
           navStepRef.current = "dest";
         } else {
-          setNavForm((prev) => ({ ...prev, destLat: lat, destLng: lng }));
+          setNavForm((prev) => ({
+            ...prev,
+            destLat: String(lat),
+            destLng: String(lng)
+          }));
           navStepRef.current = "origin";
         }
         return;
       }
 
-      setForm((prev) => ({ ...prev, lat, lng }));
+      setForm((prev) => ({ ...prev, lat: String(lat), lng: String(lng) }));
       if (draftMarkerRef.current) {
         draftMarkerRef.current.setLatLng(e.latlng);
       } else {
@@ -185,6 +202,43 @@ function App() {
       mapRef.current = null;
     };
   }, []);
+
+  // Render interactive draft polygon vertices & preview boundary while drawing
+  useEffect(() => {
+    if (!draftPolyLayerRef.current) return;
+    draftPolyLayerRef.current.clearLayers();
+
+    if (draftPolygon.length === 0) return;
+
+    draftPolygon.forEach((pt, idx) => {
+      L.marker(pt, {
+        icon: L.divIcon({
+          className: "",
+          html: `<div style="width:12px;height:12px;border-radius:50%;background:#c084fc;border:2px solid #fff;box-shadow:0 0 10px #a855f7;"></div>`,
+          iconSize: [12, 12],
+          iconAnchor: [6, 6]
+        })
+      })
+        .bindPopup(`Vertex #${idx + 1}`)
+        .addTo(draftPolyLayerRef.current);
+    });
+
+    if (draftPolygon.length === 2) {
+      L.polyline(draftPolygon, {
+        color: "#c084fc",
+        weight: 2.5,
+        dashArray: "6 6"
+      }).addTo(draftPolyLayerRef.current);
+    } else if (draftPolygon.length >= 3) {
+      L.polygon(draftPolygon, {
+        color: "#c084fc",
+        weight: 2.5,
+        fillColor: "#a855f7",
+        fillOpacity: 0.22,
+        dashArray: "6 6"
+      }).addTo(draftPolyLayerRef.current);
+    }
+  }, [draftPolygon]);
 
   useEffect(() => {
     if (!navPinsLayerRef.current) return;
@@ -210,13 +264,15 @@ function App() {
   }, [navForm, clickMode, activeTab]);
 
   async function loadGridData() {
-    const [health, incList, newsList] = await Promise.all([
+    const [health, incList, zoneList, newsList] = await Promise.all([
       fetch("/api/health").then((r) => r.json()),
       fetch("/api/incidents").then((r) => r.json()),
+      fetch("/api/zones").then((r) => r.json()),
       fetch("/api/news").then((r) => r.json())
     ]);
     setOnline(health.status === "ok");
     setIncidents(incList);
+    setZones(zoneList);
     setNews(newsList);
   }
 
@@ -230,12 +286,53 @@ function App() {
     return true;
   });
 
-  // Render zoom-adaptive radial hotspots that shrink precisely toward ground zero as you zoom in
+  const filteredZones = zones.filter((z) => {
+    if (verifyFilter === "verified") return z.verified;
+    if (verifyFilter === "unverified") return !z.verified;
+    return true;
+  });
+
+  // Render both zoom-adaptive radial hotspots and polygon geofences
   useEffect(() => {
     if (!zonesLayerRef.current) return;
     zonesLayerRef.current.clearLayers();
 
     const zoomScale = getZoomRadarScale(mapZoom);
+
+    filteredZones.forEach((zone) => {
+      if (!Array.isArray(zone.coordinates) || zone.coordinates.length < 3) return;
+      const theme = SEVERITY_THEME[zone.severity] || SEVERITY_THEME.High;
+
+      if (zone.verified) {
+        L.polygon(zone.coordinates, {
+          color: theme.ring,
+          weight: 2,
+          opacity: 0.85,
+          fillColor: theme.core,
+          fillOpacity: 0.26
+        })
+          .bindPopup(
+            `<strong>${zone.name}</strong><br/>` +
+              `<span style="color:#34d399;font-size:11px;">VERIFIED GEOFENCE</span> &bull; ${zone.category}<br/>` +
+              `<small>${zone.notes || ""}</small>`
+          )
+          .addTo(zonesLayerRef.current);
+      } else {
+        L.polygon(zone.coordinates, {
+          color: "#fbbf24",
+          weight: 2,
+          opacity: 0.75,
+          fillColor: "#fbbf24",
+          fillOpacity: 0.14,
+          dashArray: "6 6"
+        })
+          .bindPopup(
+            `<strong>${zone.name}</strong><br/>` +
+              `<span style="color:#fbbf24;font-size:11px;">UNVERIFIED GEOFENCE</span> &bull; ${zone.category}`
+          )
+          .addTo(zonesLayerRef.current);
+      }
+    });
 
     filteredIncidents.forEach((item) => {
       const theme = SEVERITY_THEME[item.severity] || SEVERITY_THEME.Medium;
@@ -264,7 +361,6 @@ function App() {
           }).addTo(zonesLayerRef.current);
         });
       } else {
-        // Compact micro-radar for unverified reports so they never overwhelm the map
         const unverifiedRadius = Math.min(baseRadius, 280) * zoomScale;
         L.circle(center, {
           radius: unverifiedRadius,
@@ -288,7 +384,7 @@ function App() {
         )
         .addTo(zonesLayerRef.current);
     });
-  }, [filteredIncidents, mapZoom]);
+  }, [filteredIncidents, filteredZones, mapZoom]);
 
   useEffect(() => {
     if (!routesLayerRef.current) return;
@@ -394,9 +490,33 @@ function App() {
     );
   }
 
-  async function handleCreateIncident(e) {
+  async function handleCreateSubmit(e) {
     e.preventDefault();
     if (!form.title.trim()) return;
+
+    if (reportType === "polygon") {
+      if (draftPolygon.length < 3) return;
+      const response = await fetch("/api/zones", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: form.title,
+          category: form.category,
+          severity: form.severity,
+          coordinates: draftPolygon,
+          notes: form.notes
+        })
+      });
+      if (response.ok) {
+        const created = await response.json();
+        setZones((prev) => [created, ...prev]);
+        setDraftPolygon([]);
+        setForm((prev) => ({ ...prev, title: "", notes: "" }));
+        setClickMode("report");
+        setActiveTab("feed");
+      }
+      return;
+    }
 
     const response = await fetch("/api/incidents", {
       method: "POST",
@@ -426,6 +546,23 @@ function App() {
       setIncidents((prev) =>
         prev.map((item) => (item.id === id ? updated : item))
       );
+    }
+  }
+
+  async function handleToggleZoneVerify(id) {
+    const response = await fetch(`/api/zones/${id}/verify`, {
+      method: "PATCH"
+    });
+    if (response.ok) {
+      const updated = await response.json();
+      setZones((prev) => prev.map((z) => (z.id === id ? updated : z)));
+    }
+  }
+
+  async function handleDeleteZone(id) {
+    const response = await fetch(`/api/zones/${id}`, { method: "DELETE" });
+    if (response.ok) {
+      setZones((prev) => prev.filter((z) => z.id !== id));
     }
   }
 
@@ -473,8 +610,13 @@ function App() {
     }
   }
 
-  const verifiedCount = incidents.filter((i) => i.verified).length;
-  const pendingCount = incidents.length - verifiedCount;
+  const verifiedCount =
+    incidents.filter((i) => i.verified).length +
+    zones.filter((z) => z.verified).length;
+  const pendingCount =
+    incidents.filter((i) => !i.verified).length +
+    zones.filter((z) => !z.verified).length;
+  const totalCount = incidents.length + zones.length;
   const radarPct = Math.max(2, Math.round(getZoomRadarScale(mapZoom) * 100));
 
   const renderRoutePanel = () => {
@@ -585,7 +727,7 @@ function App() {
             className={`nav-tab ${activeTab === "report" ? "active" : ""}`}
             onClick={() => {
               setActiveTab("report");
-              setClickMode("report");
+              setClickMode(reportType === "polygon" ? "draw" : "report");
             }}
           >
             + Report
@@ -606,7 +748,7 @@ function App() {
                   className={`filter-chip ${verifyFilter === "all" ? "active" : ""}`}
                   onClick={() => setVerifyFilter("all")}
                 >
-                  All ({incidents.length})
+                  All ({totalCount})
                 </button>
                 <button
                   className={`filter-chip ${verifyFilter === "verified" ? "active" : ""}`}
@@ -624,6 +766,65 @@ function App() {
 
               {renderRoutePanel()}
 
+              {filteredZones.length > 0 && (
+                <>
+                  <div className="section-label">
+                    Polygon Geofences ({filteredZones.length})
+                  </div>
+                  {filteredZones.map((zone) => (
+                    <div key={zone.id} className={`incident-card ${zone.severity}`}>
+                      <div className="card-header">
+                        <span
+                          className="card-title"
+                          onClick={() => {
+                            if (zone.coordinates?.length && mapRef.current) {
+                              mapRef.current.fitBounds(zone.coordinates, {
+                                padding: [60, 60]
+                              });
+                            }
+                          }}
+                        >
+                          {zone.name}
+                        </span>
+                        <button
+                          className="icon-del"
+                          onClick={() => handleDeleteZone(zone.id)}
+                          title="Delete polygon zone"
+                        >
+                          &times;
+                        </button>
+                      </div>
+
+                      <div className="badge-row">
+                        <span
+                          className={`tag ${zone.verified ? "verified" : "unverified"}`}
+                        >
+                          {zone.verified ? "VERIFIED" : "UNVERIFIED"}
+                        </span>
+                        <span className="tag geofence">
+                          GEOFENCE ({zone.coordinates.length} PTS)
+                        </span>
+                        <span className="tag">{zone.category}</span>
+                      </div>
+
+                      {zone.notes && <p className="card-notes">{zone.notes}</p>}
+
+                      <div className="card-actions">
+                        <button
+                          className="btn-sm verify-btn"
+                          onClick={() => handleToggleZoneVerify(zone.id)}
+                        >
+                          {zone.verified ? "Revoke Verify" : "Verify Geofence"}
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </>
+              )}
+
+              <div className="section-label">
+                Point Radars ({filteredIncidents.length})
+              </div>
               {filteredIncidents.map((item) => (
                 <div key={item.id} className={`incident-card ${item.severity}`}>
                   <div className="card-header">
@@ -793,16 +994,46 @@ function App() {
           )}
 
           {activeTab === "report" && (
-            <form className="form-stack" onSubmit={handleCreateIncident}>
+            <form className="form-stack" onSubmit={handleCreateSubmit}>
+              <div className="filter-bar">
+                <button
+                  type="button"
+                  className={`filter-chip ${reportType === "point" ? "active" : ""}`}
+                  onClick={() => {
+                    setReportType("point");
+                    setClickMode("report");
+                  }}
+                >
+                  Point Radar
+                </button>
+                <button
+                  type="button"
+                  className={`filter-chip ${reportType === "polygon" ? "active" : ""}`}
+                  onClick={() => {
+                    setReportType("polygon");
+                    setClickMode("draw");
+                  }}
+                >
+                  Polygon Geofence
+                </button>
+              </div>
+
               <p className="card-notes">
-                Click anywhere on the dark map to lock GPS coordinates. All new
-                submissions enter as <strong>UNVERIFIED</strong> until confirmed.
+                {reportType === "polygon"
+                  ? `Click at least 3 boundary points on the map to trace a floodbasin or cordoned area (${draftPolygon.length} point(s) plotted).`
+                  : "Click anywhere on the map to lock GPS coordinates. New reports enter as UNVERIFIED until confirmed."}
               </p>
 
               <div>
-                <label className="form-label">Incident Headline</label>
+                <label className="form-label">
+                  {reportType === "polygon" ? "Geofence Zone Name" : "Incident Headline"}
+                </label>
                 <input
-                  placeholder="e.g., Flash Flood along Eleme Junction"
+                  placeholder={
+                    reportType === "polygon"
+                      ? "e.g., Aba Rd - Eleme Flood Corridor"
+                      : "e.g., Flash Flood along Eleme Junction"
+                  }
                   value={form.title}
                   onChange={(e) => setForm({ ...form, title: e.target.value })}
                   required
@@ -839,56 +1070,85 @@ function App() {
                 </div>
               </div>
 
-              <div>
-                <label className="form-label">Impact Zone Radius (meters)</label>
-                <input
-                  type="number"
-                  min="200"
-                  max="10000"
-                  step="100"
-                  value={form.radiusMeters}
-                  onChange={(e) =>
-                    setForm({ ...form, radiusMeters: e.target.value })
-                  }
-                  required
-                />
-              </div>
+              {reportType === "point" ? (
+                <>
+                  <div>
+                    <label className="form-label">Impact Zone Radius (meters)</label>
+                    <input
+                      type="number"
+                      min="200"
+                      max="10000"
+                      step="100"
+                      value={form.radiusMeters}
+                      onChange={(e) =>
+                        setForm({ ...form, radiusMeters: e.target.value })
+                      }
+                      required
+                    />
+                  </div>
 
-              <div className="row-2">
-                <div>
-                  <label className="form-label">Latitude</label>
-                  <input
-                    type="number"
-                    step="any"
-                    value={form.lat}
-                    onChange={(e) => setForm({ ...form, lat: e.target.value })}
-                    required
-                  />
+                  <div className="row-2">
+                    <div>
+                      <label className="form-label">Latitude</label>
+                      <input
+                        type="number"
+                        step="any"
+                        value={form.lat}
+                        onChange={(e) => setForm({ ...form, lat: e.target.value })}
+                        required
+                      />
+                    </div>
+                    <div>
+                      <label className="form-label">Longitude</label>
+                      <input
+                        type="number"
+                        step="any"
+                        value={form.lng}
+                        onChange={(e) => setForm({ ...form, lng: e.target.value })}
+                        required
+                      />
+                    </div>
+                  </div>
+                </>
+              ) : (
+                <div className="row-2">
+                  <button
+                    type="button"
+                    className="btn-sm"
+                    onClick={() => setDraftPolygon((prev) => prev.slice(0, -1))}
+                    disabled={draftPolygon.length === 0}
+                  >
+                    Undo Vertex
+                  </button>
+                  <button
+                    type="button"
+                    className="btn-sm"
+                    onClick={() => setDraftPolygon([])}
+                    disabled={draftPolygon.length === 0}
+                  >
+                    Clear Polygon
+                  </button>
                 </div>
-                <div>
-                  <label className="form-label">Longitude</label>
-                  <input
-                    type="number"
-                    step="any"
-                    value={form.lng}
-                    onChange={(e) => setForm({ ...form, lng: e.target.value })}
-                    required
-                  />
-                </div>
-              </div>
+              )}
 
               <div>
                 <label className="form-label">Field Intel &amp; Landmarks</label>
                 <textarea
                   rows="3"
-                  placeholder="Describe road conditions, water depth, or eyewitness details..."
+                  placeholder="Describe road conditions, water depth, or perimeter boundaries..."
                   value={form.notes}
                   onChange={(e) => setForm({ ...form, notes: e.target.value })}
                 />
               </div>
 
-              <button className="btn-primary" type="submit">
-                Submit Unverified Report
+              <button
+                className="btn-primary"
+                type="submit"
+                disabled={reportType === "polygon" && draftPolygon.length < 3}
+              >
+                {reportType === "polygon"
+                  ? `Save Polygon Geofence (${draftPolygon.length}/3+ pts)`
+                  : "Submit Unverified Report"}
               </button>
             </form>
           )}
@@ -983,9 +1243,22 @@ function App() {
           </span>
           <button
             className={`hud-btn ${clickMode === "report" ? "active" : ""}`}
-            onClick={() => setClickMode("report")}
+            onClick={() => {
+              setClickMode("report");
+              setReportType("point");
+            }}
           >
-            Click Mode: Pin Incident
+            Pin Incident
+          </button>
+          <button
+            className={`hud-btn ${clickMode === "draw" ? "active" : ""}`}
+            onClick={() => {
+              setClickMode("draw");
+              setReportType("polygon");
+              setActiveTab("report");
+            }}
+          >
+            Draw Zone
           </button>
           <button
             className={`hud-btn ${clickMode === "nav" ? "active" : ""}`}
@@ -994,9 +1267,41 @@ function App() {
               setActiveTab("nav");
             }}
           >
-            Click Mode: Set A &rarr; B
+            Set A &rarr; B
           </button>
         </div>
+
+        {(clickMode === "draw" || draftPolygon.length > 0) && (
+          <div className="draw-toolbar">
+            <span style={{ color: "#d8b4fe", fontWeight: 700 }}>
+              GEOFENCE DRAW: {draftPolygon.length} vertex(es)
+            </span>
+            <button
+              className="btn-sm"
+              onClick={() => setDraftPolygon((prev) => prev.slice(0, -1))}
+              disabled={draftPolygon.length === 0}
+            >
+              Undo
+            </button>
+            <button
+              className="btn-sm"
+              onClick={() => setDraftPolygon([])}
+              disabled={draftPolygon.length === 0}
+            >
+              Clear
+            </button>
+            <button
+              className="btn-sm verify-btn"
+              onClick={() => {
+                setReportType("polygon");
+                setActiveTab("report");
+              }}
+              disabled={draftPolygon.length < 3}
+            >
+              Name &amp; Save
+            </button>
+          </div>
+        )}
 
         <div className="map-legend">
           <div className="legend-item">
@@ -1004,7 +1309,7 @@ function App() {
               className="dot"
               style={{ background: "#ff2a55", boxShadow: "0 0 8px #ff2a55" }}
             />
-            <span>High Intensity / Blocked Direct</span>
+            <span>High Intensity / Geofence</span>
           </div>
           <div className="legend-item">
             <span

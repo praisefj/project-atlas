@@ -1,0 +1,18 @@
+[
+  {
+    "id": "zone-201",
+    "name": "Ntawogba Creek & Mile 3 Flood Basin",
+    "category": "Flooding",
+    "severity": "High",
+    "verified": true,
+    "coordinates": [
+      [4.8125, 6.9865],
+      [4.8142, 6.9985],
+      [4.8025, 7.0035],
+      [4.7965, 6.9935],
+      [4.8035, 6.9845]
+    ],
+    "notes": "Low-lying drainage basin prone to rapid overflow during heavy rainfall.",
+    "createdAt": "2026-11-14T10:00:00.000Z"
+  }
+]

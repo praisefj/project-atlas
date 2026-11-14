@@ -7,6 +7,7 @@ const path = require("path");
 const app = express();
 const PORT = process.env.PORT || 5000;
 const INCIDENTS_FILE = path.join(__dirname, "data", "incidents.json");
+const ZONES_FILE = path.join(__dirname, "data", "zones.json");
 const NEWS_FILE = path.join(__dirname, "data", "news.json");
 const MAX_ARTICLE_AGE_MS = 21 * 24 * 60 * 60 * 1000;
 
@@ -184,7 +185,6 @@ async function runOsintIngestion() {
     return true;
   });
 
-  // Clean out generic unspecific "Port Harcourt Metro" pile-up pins while keeping verified/specific pins
   const existingIncidents = readJson(INCIDENTS_FILE).filter((inc) => {
     if (!inc.autoGeocoded || inc.verified) return true;
     if ((inc.notes || "").includes("(Port Harcourt Metro)")) return false;
@@ -251,7 +251,6 @@ async function runOsintIngestion() {
       timestamp: relTime
     });
 
-    // Only auto-pin to the map when a SPECIFIC street, junction, or district is identified
     if (landmark.specific && hazard && !seenIncidentTitles.has(cleanTitle.toLowerCase())) {
       seenIncidentTitles.add(cleanTitle.toLowerCase());
       newPinsCount++;
@@ -303,7 +302,39 @@ function haversineMeters([lat1, lng1], [lat2, lng2]) {
   return 2 * R * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 }
 
-function densifyCoords(coords, maxStepMeters = 150) {
+function isPointInPolygon([lat, lng], polygon) {
+  let inside = false;
+  for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
+    const xi = polygon[i][0];
+    const yi = polygon[i][1];
+    const xj = polygon[j][0];
+    const yj = polygon[j][1];
+    const intersect =
+      yi > lng !== yj > lng &&
+      lat < ((xj - xi) * (lng - yi)) / (yj - yi + 1e-12) + xi;
+    if (intersect) inside = !inside;
+  }
+  return inside;
+}
+
+function polygonToBoundingHazard(zone) {
+  const coords = zone.coordinates || [];
+  const lat = coords.reduce((sum, pt) => sum + pt[0], 0) / (coords.length || 1);
+  const lng = coords.reduce((sum, pt) => sum + pt[1], 0) / (coords.length || 1);
+  const maxDist = coords.reduce(
+    (max, pt) => Math.max(max, haversineMeters([lat, lng], pt)),
+    600
+  );
+  return {
+    id: zone.id,
+    title: zone.name,
+    lat,
+    lng,
+    radiusMeters: Math.round(maxDist)
+  };
+}
+
+function densifyCoords(coords, maxStepMeters = 140) {
   if (!coords || coords.length < 2) return coords || [];
   const dense = [coords[0]];
   for (let i = 0; i < coords.length - 1; i++) {
@@ -322,14 +353,26 @@ function densifyCoords(coords, maxStepMeters = 150) {
   return dense;
 }
 
-function findIntersectedHazards(routeCoords, verifiedHazards) {
-  const sampled = densifyCoords(routeCoords, 150);
-  return verifiedHazards.filter((hazard) => {
+function findIntersectedHazards(routeCoords, verifiedHazards, verifiedZones) {
+  const sampled = densifyCoords(routeCoords, 140);
+
+  const hitPoints = verifiedHazards.filter((hazard) => {
     const bufferRadius = (Number(hazard.radiusMeters) || 1000) * 1.1;
     return sampled.some(
       (pt) => haversineMeters(pt, [hazard.lat, hazard.lng]) <= bufferRadius
     );
   });
+
+  const hitPolygons = verifiedZones
+    .filter(
+      (zone) =>
+        Array.isArray(zone.coordinates) &&
+        zone.coordinates.length >= 3 &&
+        sampled.some((pt) => isPointInPolygon(pt, zone.coordinates))
+    )
+    .map(polygonToBoundingHazard);
+
+  return [...hitPoints, ...hitPolygons];
 }
 
 async function fetchOsrmCorridor(waypointsLatLng) {
@@ -408,6 +451,56 @@ app.delete("/api/incidents/:id", (req, res) => {
     return res.status(404).json({ error: "Incident not found." });
   }
   writeJson(INCIDENTS_FILE, filtered);
+  res.json({ deleted: req.params.id });
+});
+
+// Polygon Geofence Endpoints
+app.get("/api/zones", (req, res) => {
+  res.json(readJson(ZONES_FILE));
+});
+
+app.post("/api/zones", (req, res) => {
+  const { name, category, severity, coordinates, notes } = req.body;
+  if (!name || !Array.isArray(coordinates) || coordinates.length < 3) {
+    return res.status(400).json({ error: "Zone name and at least 3 polygon vertices are required." });
+  }
+
+  const zones = readJson(ZONES_FILE);
+  const newZone = {
+    id: `zone-${Date.now()}`,
+    name: name.trim(),
+    category: category || "Flooding",
+    severity: severity || "High",
+    verified: false,
+    coordinates: coordinates.map(([lat, lng]) => [Number(lat), Number(lng)]),
+    notes: (notes || "").trim(),
+    createdAt: new Date().toISOString()
+  };
+
+  zones.unshift(newZone);
+  writeJson(ZONES_FILE, zones);
+  res.status(201).json(newZone);
+});
+
+app.patch("/api/zones/:id/verify", (req, res) => {
+  const zones = readJson(ZONES_FILE);
+  const target = zones.find((z) => z.id === req.params.id);
+  if (!target) {
+    return res.status(404).json({ error: "Polygon zone not found." });
+  }
+
+  target.verified = !target.verified;
+  writeJson(ZONES_FILE, zones);
+  res.json(target);
+});
+
+app.delete("/api/zones/:id", (req, res) => {
+  const zones = readJson(ZONES_FILE);
+  const filtered = zones.filter((z) => z.id !== req.params.id);
+  if (filtered.length === zones.length) {
+    return res.status(404).json({ error: "Polygon zone not found." });
+  }
+  writeJson(ZONES_FILE, filtered);
   res.json({ deleted: req.params.id });
 });
 
@@ -531,6 +624,7 @@ app.post("/api/routes/navigate", async (req, res) => {
   const start = [Number(origin[0]), Number(origin[1])];
   const end = [Number(destination[0]), Number(destination[1])];
   const verifiedHazards = readJson(INCIDENTS_FILE).filter((h) => h.verified);
+  const verifiedZones = readJson(ZONES_FILE).filter((z) => z.verified);
 
   let directRoute;
   try {
@@ -544,7 +638,11 @@ app.post("/api/routes/navigate", async (req, res) => {
     };
   }
 
-  const intersected = findIntersectedHazards(directRoute.coordinates, verifiedHazards);
+  const intersected = findIntersectedHazards(
+    directRoute.coordinates,
+    verifiedHazards,
+    verifiedZones
+  );
 
   if (intersected.length === 0) {
     return res.json({
@@ -561,7 +659,7 @@ app.post("/api/routes/navigate", async (req, res) => {
           distanceKm: directRoute.distanceKm,
           durationMins: directRoute.durationMins,
           color: "#10b981",
-          summary: "Direct route avoids all verified red and amber zones.",
+          summary: "Direct route avoids all verified hotspot radars and polygon geofences.",
           coordinates: directRoute.coordinates
         }
       ]
@@ -622,8 +720,16 @@ app.post("/api/routes/navigate", async (req, res) => {
     };
   }
 
-  const leftHits = findIntersectedHazards(leftRoute.coordinates, verifiedHazards).length;
-  const rightHits = findIntersectedHazards(rightRoute.coordinates, verifiedHazards).length;
+  const leftHits = findIntersectedHazards(
+    leftRoute.coordinates,
+    verifiedHazards,
+    verifiedZones
+  ).length;
+  const rightHits = findIntersectedHazards(
+    rightRoute.coordinates,
+    verifiedHazards,
+    verifiedZones
+  ).length;
 
   const candidates = [
     { label: "North/West Safe Flank", route: leftRoute, hits: leftHits },
@@ -651,7 +757,7 @@ app.post("/api/routes/navigate", async (req, res) => {
         distanceKm: primary.route.distanceKm,
         durationMins: primary.route.durationMins,
         color: "#10b981",
-        summary: `Bypasses ${orderedHazards.length} active hazard zone(s) (+${Math.max(1, primary.route.durationMins - directRoute.durationMins)} min vs blocked direct road).`,
+        summary: `Bypasses ${orderedHazards.length} active zone(s) (+${Math.max(1, primary.route.durationMins - directRoute.durationMins)} min vs blocked direct road).`,
         coordinates: primary.route.coordinates
       },
       {
