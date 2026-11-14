@@ -1,17 +1,13 @@
-require("dotenv").config();
 const express = require("express");
 const cors = require("cors");
-const fs = require("fs");
 const path = require("path");
+require("dotenv").config({ path: path.join(__dirname, ".env") });
+const db = require("./db");
 
 const app = express();
 const PORT = process.env.PORT || 5000;
 const OPERATOR_PIN = process.env.OPERATOR_PIN || "2026";
-const INCIDENTS_FILE = path.join(__dirname, "data", "incidents.json");
-const ZONES_FILE = path.join(__dirname, "data", "zones.json");
-const NEWS_FILE = path.join(__dirname, "data", "news.json");
 const MAX_ARTICLE_AGE_MS = 21 * 24 * 60 * 60 * 1000;
-const VERIFY_THRESHOLD = 3;
 
 app.use(cors());
 app.use(express.json());
@@ -60,15 +56,6 @@ const RSS_SOURCES = [
     url: "https://www.vanguardngr.com/feed/"
   }
 ];
-
-function readJson(filePath) {
-  if (!fs.existsSync(filePath)) return [];
-  return JSON.parse(fs.readFileSync(filePath, "utf-8"));
-}
-
-function writeJson(filePath, data) {
-  fs.writeFileSync(filePath, JSON.stringify(data, null, 2), "utf-8");
-}
 
 function requireOperatorPin(req, res, next) {
   const provided = String(req.headers["x-operator-pin"] || "");
@@ -126,7 +113,6 @@ function parseRssItems(xml, fallbackSource) {
     const pubDateRaw = decodeXml(pubDateMatch ? pubDateMatch[1] : "");
     const publishedMs = pubDateRaw ? Date.parse(pubDateRaw) : NaN;
 
-    // Require a valid recent publication date and reject past-year archive headlines
     if (Number.isNaN(publishedMs) || now - publishedMs > MAX_ARTICLE_AGE_MS) {
       continue;
     }
@@ -135,13 +121,7 @@ function parseRssItems(xml, fallbackSource) {
     }
 
     if (title) {
-      items.push({
-        title,
-        link,
-        source,
-        description,
-        publishedMs
-      });
+      items.push({ title, link, source, description, publishedMs });
     }
   }
   return items;
@@ -198,13 +178,13 @@ function classifyHazard(text) {
 async function runOsintIngestion() {
   const now = Date.now();
 
-  const existingNews = readJson(NEWS_FILE).filter((n) => {
+  const existingNews = (await db.getNews()).filter((n) => {
     if (containsPastYear(n.headline)) return false;
     if (n.publishedAt && now - Date.parse(n.publishedAt) > MAX_ARTICLE_AGE_MS) return false;
     return true;
   });
 
-  const existingIncidents = readJson(INCIDENTS_FILE).filter((inc) => {
+  const existingIncidents = (await db.getIncidents()).filter((inc) => {
     if (!inc.autoGeocoded || inc.verified) return true;
     if (containsPastYear(`${inc.title} ${inc.notes || ""}`)) return false;
     if ((inc.notes || "").includes("(Port Harcourt Metro)")) return false;
@@ -303,8 +283,8 @@ async function runOsintIngestion() {
     }
   }
 
-  writeJson(NEWS_FILE, existingNews.slice(0, 60));
-  writeJson(INCIDENTS_FILE, existingIncidents);
+  await db.replaceNews(existingNews);
+  await db.replaceIncidents(existingIncidents);
 
   return {
     liveFeedSucceeded,
@@ -376,9 +356,13 @@ function densifyCoords(coords, maxStepMeters = 140) {
   return dense;
 }
 
-function findIntersectedHazards(routeCoords, verifiedHazards, verifiedZones) {
-  const sampled = densifyCoords(routeCoords, 140);
+async function findIntersectedHazards(routeCoords, verifiedHazards, verifiedZones) {
+  const postgisHits = await db.querySpatialCollisions(routeCoords);
+  if (postgisHits !== null) {
+    return postgisHits;
+  }
 
+  const sampled = densifyCoords(routeCoords, 140);
   const hitPoints = verifiedHazards.filter((hazard) => {
     const bufferRadius = (Number(hazard.radiusMeters) || 1000) * 1.1;
     return sampled.some(
@@ -422,7 +406,11 @@ async function fetchOsrmCorridor(waypointsLatLng) {
 }
 
 app.get("/api/health", (req, res) => {
-  res.json({ status: "ok", project: "Project Atlas Tactical API" });
+  res.json({
+    status: "ok",
+    project: "Project Atlas Tactical API",
+    storage: db.getStorageMode()
+  });
 });
 
 app.get("/api/landmarks", (req, res) => {
@@ -437,173 +425,125 @@ app.post("/api/operator/auth", (req, res) => {
   return res.status(401).json({ authenticated: false, error: "Invalid Operator Command PIN." });
 });
 
-app.get("/api/incidents", (req, res) => {
-  const list = readJson(INCIDENTS_FILE).map((item) => ({
-    ...item,
-    confirmations: Number(item.confirmations) || (item.verified ? VERIFY_THRESHOLD : 1)
-  }));
-  res.json(list);
+app.get("/api/incidents", async (req, res) => {
+  res.json(await db.getIncidents());
 });
 
-app.post("/api/incidents", (req, res) => {
+app.post("/api/incidents", async (req, res) => {
   const { title, category, severity, lat, lng, radiusMeters, notes } = req.body;
   if (!title || lat === undefined || lng === undefined) {
     return res.status(400).json({ error: "Title, latitude, and longitude are required." });
   }
-
-  const incidents = readJson(INCIDENTS_FILE);
-  const newIncident = {
-    id: `inc-${Date.now()}`,
-    title: title.trim(),
-    category: category || "Flooding",
-    severity: severity || "Medium",
-    verified: false,
-    confirmations: 1,
-    autoGeocoded: false,
-    radiusMeters: Number(radiusMeters) || 1000,
-    lat: Number(lat),
-    lng: Number(lng),
-    notes: (notes || "").trim(),
-    createdAt: new Date().toISOString()
-  };
-
-  incidents.unshift(newIncident);
-  writeJson(INCIDENTS_FILE, incidents);
-  res.status(201).json(newIncident);
+  const created = await db.createIncident({
+    title,
+    category,
+    severity,
+    lat,
+    lng,
+    radiusMeters,
+    notes
+  });
+  res.status(201).json(created);
 });
 
-app.patch("/api/incidents/:id", requireOperatorPin, (req, res) => {
-  const incidents = readJson(INCIDENTS_FILE);
-  const target = incidents.find((item) => item.id === req.params.id);
-  if (!target) {
-    return res.status(404).json({ error: "Incident not found." });
-  }
-
+app.patch("/api/incidents/:id", requireOperatorPin, async (req, res) => {
   const { severity, radiusMeters } = req.body;
+  const patch = {};
   if (["High", "Medium", "Low"].includes(severity)) {
-    target.severity = severity;
+    patch.severity = severity;
   }
   if (radiusMeters !== undefined && !Number.isNaN(Number(radiusMeters))) {
-    target.radiusMeters = Math.max(200, Math.min(10000, Number(radiusMeters)));
+    patch.radiusMeters = Math.max(200, Math.min(10000, Number(radiusMeters)));
   }
 
-  writeJson(INCIDENTS_FILE, incidents);
-  res.json(target);
+  const updated = await db.updateIncident(req.params.id, patch);
+  if (!updated) {
+    return res.status(404).json({ error: "Incident not found." });
+  }
+  res.json(updated);
 });
 
-app.patch("/api/incidents/:id/verify", requireOperatorPin, (req, res) => {
-  const incidents = readJson(INCIDENTS_FILE);
-  const target = incidents.find((item) => item.id === req.params.id);
+app.patch("/api/incidents/:id/verify", requireOperatorPin, async (req, res) => {
+  const list = await db.getIncidents();
+  const target = list.find((item) => item.id === req.params.id);
   if (!target) {
     return res.status(404).json({ error: "Incident not found." });
   }
 
-  target.verified = !target.verified;
-  if (target.verified && (Number(target.confirmations) || 1) < VERIFY_THRESHOLD) {
-    target.confirmations = VERIFY_THRESHOLD;
-  } else if (!target.verified) {
-    target.confirmations = 1;
-  }
+  const nextVerified = !target.verified;
+  const nextConfirmations = nextVerified
+    ? Math.max(target.confirmations || 1, db.VERIFY_THRESHOLD)
+    : 1;
 
-  writeJson(INCIDENTS_FILE, incidents);
-  res.json(target);
+  const updated = await db.updateIncident(req.params.id, {
+    verified: nextVerified,
+    confirmations: nextConfirmations
+  });
+  res.json(updated);
 });
 
-app.post("/api/incidents/:id/corroborate", (req, res) => {
-  const incidents = readJson(INCIDENTS_FILE);
-  const target = incidents.find((item) => item.id === req.params.id);
+app.post("/api/incidents/:id/corroborate", async (req, res) => {
+  const list = await db.getIncidents();
+  const target = list.find((item) => item.id === req.params.id);
   if (!target) {
     return res.status(404).json({ error: "Incident not found." });
   }
 
-  const current = Number(target.confirmations) || (target.verified ? VERIFY_THRESHOLD : 1);
-  target.confirmations = current + 1;
-  if (target.confirmations >= VERIFY_THRESHOLD) {
-    target.verified = true;
-  }
-
-  writeJson(INCIDENTS_FILE, incidents);
-  res.json(target);
+  const nextConfirmations = (Number(target.confirmations) || 1) + 1;
+  const updated = await db.updateIncident(req.params.id, {
+    confirmations: nextConfirmations,
+    verified: target.verified || nextConfirmations >= db.VERIFY_THRESHOLD
+  });
+  res.json(updated);
 });
 
-app.delete("/api/incidents/:id", requireOperatorPin, (req, res) => {
-  const incidents = readJson(INCIDENTS_FILE);
-  const filtered = incidents.filter((item) => item.id !== req.params.id);
-  if (filtered.length === incidents.length) {
+app.delete("/api/incidents/:id", requireOperatorPin, async (req, res) => {
+  const removed = await db.deleteIncident(req.params.id);
+  if (!removed) {
     return res.status(404).json({ error: "Incident not found." });
   }
-  writeJson(INCIDENTS_FILE, filtered);
   res.json({ deleted: req.params.id });
 });
 
-app.get("/api/zones", (req, res) => {
-  res.json(readJson(ZONES_FILE));
+app.get("/api/zones", async (req, res) => {
+  res.json(await db.getZones());
 });
 
-app.post("/api/zones", (req, res) => {
+app.post("/api/zones", async (req, res) => {
   const { name, category, severity, coordinates, notes } = req.body;
   if (!name || !Array.isArray(coordinates) || coordinates.length < 3) {
     return res.status(400).json({ error: "Zone name and at least 3 polygon vertices are required." });
   }
-
-  const zones = readJson(ZONES_FILE);
-  const newZone = {
-    id: `zone-${Date.now()}`,
-    name: name.trim(),
-    category: category || "Flooding",
-    severity: severity || "High",
-    verified: false,
-    coordinates: coordinates.map(([lat, lng]) => [Number(lat), Number(lng)]),
-    notes: (notes || "").trim(),
-    createdAt: new Date().toISOString()
-  };
-
-  zones.unshift(newZone);
-  writeJson(ZONES_FILE, zones);
-  res.status(201).json(newZone);
+  const created = await db.createZone({ name, category, severity, coordinates, notes });
+  res.status(201).json(created);
 });
 
-app.patch("/api/zones/:id/verify", requireOperatorPin, (req, res) => {
-  const zones = readJson(ZONES_FILE);
-  const target = zones.find((z) => z.id === req.params.id);
-  if (!target) {
+app.patch("/api/zones/:id/verify", requireOperatorPin, async (req, res) => {
+  const updated = await db.toggleZoneVerify(req.params.id);
+  if (!updated) {
     return res.status(404).json({ error: "Polygon zone not found." });
   }
-
-  target.verified = !target.verified;
-  writeJson(ZONES_FILE, zones);
-  res.json(target);
+  res.json(updated);
 });
 
-app.delete("/api/zones/:id", requireOperatorPin, (req, res) => {
-  const zones = readJson(ZONES_FILE);
-  const filtered = zones.filter((z) => z.id !== req.params.id);
-  if (filtered.length === zones.length) {
+app.delete("/api/zones/:id", requireOperatorPin, async (req, res) => {
+  const removed = await db.deleteZone(req.params.id);
+  if (!removed) {
     return res.status(404).json({ error: "Polygon zone not found." });
   }
-  writeJson(ZONES_FILE, filtered);
   res.json({ deleted: req.params.id });
 });
 
-app.get("/api/news", (req, res) => {
-  res.json(readJson(NEWS_FILE));
+app.get("/api/news", async (req, res) => {
+  res.json(await db.getNews());
 });
 
-app.post("/api/news", (req, res) => {
+app.post("/api/news", async (req, res) => {
   const { source, tag, headline } = req.body;
   if (!headline) {
     return res.status(400).json({ error: "Headline is required." });
   }
-  const items = readJson(NEWS_FILE);
-  const entry = {
-    id: `news-${Date.now()}`,
-    source: (source || "Field Dispatch").trim(),
-    tag: (tag || "INTEL").toUpperCase(),
-    headline: headline.trim(),
-    timestamp: "Just now"
-  };
-  items.unshift(entry);
-  writeJson(NEWS_FILE, items);
+  const entry = await db.createNews({ source, tag, headline });
   res.status(201).json(entry);
 });
 
@@ -616,10 +556,10 @@ app.post("/api/osint/sync", async (req, res) => {
   }
 });
 
-app.get("/api/sitrep", (req, res) => {
-  const incidents = readJson(INCIDENTS_FILE);
-  const zones = readJson(ZONES_FILE);
-  const news = readJson(NEWS_FILE);
+app.get("/api/sitrep", async (req, res) => {
+  const incidents = await db.getIncidents();
+  const zones = await db.getZones();
+  const news = await db.getNews();
 
   const verifiedInc = incidents.filter((i) => i.verified);
   const pendingInc = incidents.filter((i) => !i.verified);
@@ -627,7 +567,7 @@ app.get("/api/sitrep", (req, res) => {
 
   const lines = [
     `# PROJECT ATLAS - PORT HARCOURT TACTICAL SITREP`,
-    `Generated: ${new Date().toUTCString()}`,
+    `Generated: ${new Date().toUTCString()} (Storage: ${db.getStorageMode().toUpperCase()})`,
     ``,
     `## GRID TELEMETRY SUMMARY`,
     `- Verified Hotspot Radars: ${verifiedInc.length}`,
@@ -654,7 +594,7 @@ app.get("/api/sitrep", (req, res) => {
     ...(pendingInc.length
       ? pendingInc.map(
           (i) =>
-            `- ${i.title} (${i.confirmations || 1}/${VERIFY_THRESHOLD} confirmations @ ${i.lat}, ${i.lng})`
+            `- ${i.title} (${i.confirmations || 1}/${db.VERIFY_THRESHOLD} confirmations @ ${i.lat}, ${i.lng})`
         )
       : [`- None pending`]),
     ``,
@@ -756,8 +696,8 @@ app.post("/api/routes/navigate", async (req, res) => {
 
   const start = [Number(origin[0]), Number(origin[1])];
   const end = [Number(destination[0]), Number(destination[1])];
-  const verifiedHazards = readJson(INCIDENTS_FILE).filter((h) => h.verified);
-  const verifiedZones = readJson(ZONES_FILE).filter((z) => z.verified);
+  const verifiedHazards = (await db.getIncidents()).filter((h) => h.verified);
+  const verifiedZones = (await db.getZones()).filter((z) => z.verified);
 
   let directRoute;
   try {
@@ -771,7 +711,7 @@ app.post("/api/routes/navigate", async (req, res) => {
     };
   }
 
-  const intersected = findIntersectedHazards(
+  const intersected = await findIntersectedHazards(
     directRoute.coordinates,
     verifiedHazards,
     verifiedZones
@@ -853,15 +793,11 @@ app.post("/api/routes/navigate", async (req, res) => {
     };
   }
 
-  const leftHits = findIntersectedHazards(
-    leftRoute.coordinates,
-    verifiedHazards,
-    verifiedZones
+  const leftHits = (
+    await findIntersectedHazards(leftRoute.coordinates, verifiedHazards, verifiedZones)
   ).length;
-  const rightHits = findIntersectedHazards(
-    rightRoute.coordinates,
-    verifiedHazards,
-    verifiedZones
+  const rightHits = (
+    await findIntersectedHazards(rightRoute.coordinates, verifiedHazards, verifiedZones)
   ).length;
 
   const candidates = [
@@ -907,9 +843,11 @@ app.post("/api/routes/navigate", async (req, res) => {
   });
 });
 
-app.listen(PORT, () => {
-  console.log(`Project Atlas Tactical API running on http://localhost:${PORT}`);
-  setInterval(() => {
-    runOsintIngestion().catch(() => {});
-  }, 10 * 60 * 1000);
+db.initDatabase().then(({ mode }) => {
+  app.listen(PORT, () => {
+    console.log(`Project Atlas Tactical API running on http://localhost:${PORT} [storage: ${mode}]`);
+    setInterval(() => {
+      runOsintIngestion().catch(() => {});
+    }, 10 * 60 * 1000);
+  });
 });
