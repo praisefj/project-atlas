@@ -9,7 +9,8 @@
     "lat": 4.8032,
     "lng": 7.0115,
     "notes": "Deep water accumulation across Aba Rd intersection; vehicles advised to divert.",
-    "createdAt": "2026-11-14T08:30:00.000Z"
+    "createdAt": "2026-11-14T08:30:00.000Z",
+    "confirmations": 3
   },
   {
     "id": "inc-103",
@@ -21,6 +22,7 @@
     "lat": 4.8195,
     "lng": 7.0365,
     "notes": "Crowdsourced tip reporting smoke near industrial layout; awaiting field verification.",
-    "createdAt": "2026-11-14T09:45:00.000Z"
+    "createdAt": "2026-11-14T09:45:00.000Z",
+    "confirmations": 3
   }
 ]
